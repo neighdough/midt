@@ -372,8 +372,21 @@ def run_census(nbhood=None):
             age_labels.append('-'.join([str(i-5), str(i-1)]))
     #male query
     male_cols = []
-    for i in range(3,21,1):
-        if 
+    st = 'sum(b01001{})'
+    var_index = iter(range(3, 21, 1))
+    for i in var_index:
+        if i in (6,18,20):
+            val = [i, i+1]
+            male_cols.append('+'.join([st.format(str(v).zfill(3)) for v in val]))
+            i += 2
+            #next(var_index)
+        elif i == 8:
+            val = [i, i+1, i+2]
+            male_cols.append('+'.join([st.format(str(v).zfill(3)) for v in val])) 
+            i += 3
+        else:
+            male_cols.append(st.format(str(i).zfill(3)))
+
 
 def calculate_median(incomedata):
 	"""
