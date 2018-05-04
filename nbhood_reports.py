@@ -347,45 +347,93 @@ def run_census(nbhood=None):
              "select eng/total*100 eng, span/total*100 span "
              "from agg")
 
-    """
-    Population Pyramid
-        Male -> 3 to 25
-            groups:
-                6-7
-                8-10
-                18-19
-                20-21
-        Female -> 27 to 49
-            groups:
-                30-31
-                32-34
-                42-43
-                44-45    
-    """
     age_labels = []
     for i in range(5, 90, 5):
         if i == 5:
             age_labels.append('<'+str(i))
         elif i == 85:
+            age_labels.append('-'.join([str(i-5), str(i-1)]))
             age_labels.append(str(i)+'+')
         else:
             age_labels.append('-'.join([str(i-5), str(i-1)]))
     #male query
-    male_cols = []
-    st = 'sum(b01001{})'
-    var_index = iter(range(3, 21, 1))
+    male_index = range(3, 26)
+    female_index = range(27, 50)
+    male_cols = build_age_query(male_index, (6,18,20), 8)
+    female_cols = build_age_query(female_index, (29, 42, 44), 31)
+    q_age = "select {0} from acs5yr_2015.b01001 where geoid in ('{1}')"
+    df_male = pd.read_sql(q_age.format(','.join(i for i in male_cols),
+                            "','".join(i for i in tracts)), engine_census)
+    df_female = pd.read_sql(q_age.format(','.join(i for i in female_cols),
+                            "','".join(i for i in tracts)), engine_census)
+    df = df_male.append(df_female)
+    df = df.transpose()
+    df.columns = ['m', 'f']
+    df['pctm'] = df.m /(df.m + df.f)
+    df['pctf'] = df.f /(df.m + df.f)
+    fig, axes = plt.subplots(ncols=2, sharey=True)
+    position=range(len(age_labels))
+    axes[0].barh(position, df.m, 
+            align='center', color='#79B473')
+    axes[0].set(title='Male Population')
+    axes[1].barh(position, df.f,
+            align='center', color='#440D0F')
+    axes[1].set(title='Female Population')
+    axes[0].invert_xaxis()
+    axes[0].set(yticks=position, yticklabels=age_labels)
+    axes[0].yaxis.tick_right()
+    plt.tight_layout()
+    fig.subplots_adjust(wspace=0.22)
+    plt.savefig('./images/pop_pyramid.jpg', dpi=300)
+    plt.close()
+
+    yticks = [0., .25, .5, .75, 1.]
+    ytick_labels = ['0%', '25%', '50%', '25%', '0%']
+    df[['pctm', 'pctf']].plot.bar(stacked=True, 
+            width=.94, color=['#79B473','#440D0F'])
+    plt.legend(['Male', 'Female'],loc='upper center',bbox_to_anchor=(.5, 1.05), ncol=2,
+            fancybox=True, shadow=True)
+    plt.xlabel('Age')
+    plt.ylabel('Percent of Group')
+    plt.yticks(yticks, ytick_labels)
+    pctile_x = [17]
+    plt.plot(x, [.25, .25], '--k')
+    plt.plot(x, [.5, .5], 'k')
+    plt.plot(x, [.75, .75], '--k')
+    plt.tight_layout()
+    plt.savefig('./images/mf_ratio.jpg', dpi=300)
+    plt.close()
+    
+def build_age_query(var_index, twos, threes):
+    """
+    Helper function to build query for age by sex table.
+    Args:
+        var_index [int]: list of values that specifies the starting and
+            ending location of column values
+        twos (int): tuple specifying the starting position of columns that
+            need to add two columns in order to attain 5-year cohort
+        threes int: value specifying the starting position of columns that 
+            need to add three columns in order to attain 5-year cohort
+    Returns:
+        List of strings containing the necessary elements to excute query.
+    """
+    cols = []
+    st = 'sum(b01001{0})'
     for i in var_index:
-        if i in (6,18,20):
-            val = [i, i+1]
-            male_cols.append('+'.join([st.format(str(v).zfill(3)) for v in val]))
-            i += 2
-            #next(var_index)
-        elif i == 8:
-            val = [i, i+1, i+2]
-            male_cols.append('+'.join([st.format(str(v).zfill(3)) for v in val])) 
-            i += 3
+        j = var_index.index(i)
+        if i in twos:
+            val = [i,i+1]
+            col = '+'.join([st.format(str(v).zfill(3)) for v in val])
+            cols.append(col+'c'+str(j))
+            del var_index[j:j+1]
+        elif i == threes:
+            val = var_index[j:j+3] 
+            col = '+'.join([st.format(str(v).zfill(3)) for v in val])
+            cols.append(col+'c'+str(j)) 
+            del var_index[j:j+2]
         else:
-            male_cols.append(st.format(str(i).zfill(3)))
+            cols.append(st.format(str(i).zfill(3))+'c'+str(j))
+    return cols
 
 
 def calculate_median(incomedata):
@@ -429,3 +477,9 @@ def calculate_median(incomedata):
 
 		sample_median = k_hat * pow(2, (1/theta_hat))
 	return sample_median
+
+def ownership():
+    """
+    """
+
+
