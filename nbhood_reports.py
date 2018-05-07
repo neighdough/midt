@@ -32,7 +32,7 @@ engine_blight = utils.connect(**params)
 engine_census = utils.connect(**cnx_params.census)
 pd.set_option('display.width', 180)
 os.chdir(('/home/nate/dropbox-caeser/Data/MIDT/Data_Warehouse/'
-          'reports/neighborhood/generated_reports/KlondikeSmokeyCityCDC/')
+          'reports/neighborhood/generated_reports/KlondikeSmokeyCityCDC/'))
 nbhood = 'Klondike Smokey City CDC'
 
 def run_report(period):
@@ -481,5 +481,57 @@ def calculate_median(incomedata):
 def ownership():
     """
     """
+    q_make_distinct = ("drop table if exists own_count;"
+                        "create temporary table own_count as "
+                            "select own_adr, count(own_adr) from "
+                            "(select parcelid, parid, "
+                                "concat(adrno, ' ', adrstr) par_adr "
+            	            "from sca_parcels p, sca_pardat, "
+                            "geography.boundaries b "
+                            "where parid = parcelid "
+                            "and st_intersects(st_centroid(p.wkb_geometry), "
+                                                "b.wkb_geometry) "
+                            "and name = '{}') par "
+                            "join (select parid, own1, "
+                                "concat(adrno, ' ', adrstr, ' ', cityname) own_adr, "
+                                    "cityname, statecode, zip1 "
+                                "from sca_owndat) own "
+                            "on own.parid = parcelid "
+                            "group by own_adr order by own_adr")
+    engine_blight.execute(q_make_distinct.format(nbhood))
 
-
+    q_own = ("select distinct on(count, own_adr) initcap(own) as own, "
+            "initcap(concat(own_adr, ' ', statecode, ' ', zip1)) as adr, "
+            "count as props "
+            "from "
+            "(select own_adr, count from own_count "
+            " order by count desc limit 5) k "
+            "inner join (select "
+                  "case when lower(own1) like '%shelby county tax sale%' "
+                        "then 'Shelby County Tax Sale' "
+                  "when lower(concat(adrno, adrstr)) like '%125main%' "
+                        "then 'City of Memphis' "
+                      "when lower(concat(adrno, adrstr, cityname, statecode)) "
+                        "like '%po box 2751memphistn%' "
+                        "then 'Shelby County Tax Sale' "	  
+                      "when lower(concat(adrno, adrstr, cityname)) "
+                        "like '160mainmemphis' "
+                        "then 'Shelby County' "
+                      "when lower(concat(adrno, adrstr, cityname)) "
+                        "like '170mainmemphis' "
+                        "then 'State of Tennessee' "
+                      "else own1 "
+                  "end as own, "
+                  "concat(adrno, ' ', adrstr, ' ', cityname) owna, "
+                  "cityname, statecode, zip1 from sca_owndat) o "
+            "on own_adr = owna "
+            "order by count desc, own_adr ")
+    df_own = pd.read_sql(text(q_own), engine_blight)
+    fig, ax = plt.subplots()
+    ax.barh(df_own.index.tolist(), df_own.props.tolist(), color="#253C78")
+    ax.set_yticks(df_own.index.tolist())
+    ax.set_yticklabels(df_own.own.tolist())
+    ax.set_xlabel('Number of Properties')
+    plt.tight_layout()
+    plt.savefig('./images/top_owners.jpg', dpi=300)
+    plt.close()
