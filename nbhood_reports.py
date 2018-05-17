@@ -7,10 +7,16 @@ Example:
     $ python reports.py may
 TODO:
     *methods:
-        run_report
+        - run_report
+        - make_property_table: generate temp table containing all parcels within the neighborhood
+            this will become te basis for all subsequent property queries
+        - check_directory: check if directory for report exists, create if not
+        - 
+
     *set up project
         - create directory using neighborhood name
-        -switch to project directory
+        - switch to project directory
+    
 
 """
 import sys
@@ -26,14 +32,18 @@ import seaborn as sns
 from sqlalchemy import text
 from titlecase import titlecase
 from math import log
+import numpy as np
+from scipy.interpolate import spline
+from pywaffle import Waffle
 
-params = cnx_params.blight
+params = cnx_params.blight_local
 engine_blight = utils.connect(**params)
-engine_census = utils.connect(**cnx_params.census)
+#engine_census = utils.connect(**cnx_params.census)
 pd.set_option('display.width', 180)
 os.chdir(('/home/nate/dropbox-caeser/Data/MIDT/Data_Warehouse/'
           'reports/neighborhood/generated_reports/KlondikeSmokeyCityCDC/'))
 nbhood = 'Klondike Smokey City CDC'
+cur_year = datetime.datetime.today().year
 
 def run_report(period):
     """Primary function that handles the query and generates the main output
@@ -331,8 +341,8 @@ def run_census(nbhood=None):
                 "sum(b15001059) + sum(b15001067) + "
                 "sum(b15001075) + sum(b15001083) grad        "
              "from acs5yr_2015.b15001 "
-                 "where geoid in ('{}')
-                 and fileid = '2015e5') "
+                 "where geoid in ('{}')"
+                 "and fileid = '2015e5') "
             "select no_dip/total*100 no_dip, dip/total*100 dip,"
                 "assoc/total*100 assoc, bach/total*100 bach, "
                 "grad/total*100 grad "
@@ -465,9 +475,9 @@ def calculate_median(incomedata):
 	if (lower_perc == 0.0):
 		sample_median = lower_income + ((upper_income - lower_income)/2.0)
 	else:
-		theta_hat = (log(1.0 - lower_perc) - log(1.0 - upper_perc)) 
+		theta_hat = ((log(1.0 - lower_perc) - log(1.0 - upper_perc)) 
                                     / 
-                (log(upper_income) - log(lower_income))
+                (log(upper_income) - log(lower_income)))
 		
                 k_hat = (pow((upper_perc - lower_perc) 
                     / 
@@ -481,6 +491,8 @@ def calculate_median(incomedata):
 def ownership():
     """
     """
+
+    #selects distinct owner names for ownership in neighborhood
     q_make_distinct = ("drop table if exists own_count;"
                         "create temporary table own_count as "
                             "select own_adr, count(own_adr) from "
@@ -500,6 +512,46 @@ def ownership():
                             "group by own_adr order by own_adr")
     engine_blight.execute(q_make_distinct.format(nbhood))
 
+    #------------------------------------------------------------------------
+    #------------------Waffle Chart for Owner Occupancy----------------------
+    #------------------------------------------------------------------------
+   
+    #gets break down of owner occupancy totals
+    q_ownocc = ("with own as "
+                "(select lower(concat(adrno,adrstr)) ownadr, parid "
+                        "from sca_owndat) "
+                "select ownocc, nonownocc from "
+                "(select count(parcelid) ownocc from nbhood_props, own "
+                "where parcelid = parid and paradrstr = ownadr) oc "
+                "join "
+                "(select count(parcelid) nonownocc from nbhood_props, own "
+                "where parcelid = parid and paradrstr <> ownadr) noc "
+                "on 1 = 1")
+    own_totals = engine_blight.execute(q_ownocc).fetchone()
+    vals = {'Non-Owner Occupied':
+            int(round(own_totals[1]/float(sum(own_totals)),2)*100),
+            'Owner Occupied':
+            int(round(own_totals[0]/float(sum(own_totals)),2)*100)}
+    fig = plt.figure(FigureClass=Waffle,
+            rows=5,
+            values=vals,
+            colors=('#ffffff', '#79B473'),
+#            grid={'color':'black', 'linestyle':'solid', 'linewidth':2},
+            #colors=('#003BD1', '#79B473'),
+            title={'label': 'Ownership Occupancy Totals', 'loc':'center'},
+            labels=["{0} ({1}%)".format(k, v) for k, v in vals.items()],
+            legend={'loc': 'center', 'bbox_to_anchor': (0, -0.4), 
+                'ncol': len(own_totals), 'framealpha': 0})
+#    plt.grid(color='k', linestyle='solid', linewidth=2)
+    ax = plt.gca()
+    ax.set_facecolor('black')
+    plt.tight_layout()
+    plt.savefig('./images/ownocc_waffle.jpg', dpi=300)
+    plt.close()
+
+
+
+    #select counts for unique owners in neighborhood
     q_own = ("select distinct on(count, own_adr) initcap(own) as own, "
             "initcap(concat(own_adr, ' ', statecode, ' ', zip1)) as adr, "
             "count as props "
@@ -515,10 +567,10 @@ def ownership():
                         "like '%po box 2751memphistn%' "
                         "then 'Shelby County Tax Sale' "	  
                       "when lower(concat(adrno, adrstr, cityname)) "
-                        "like '160mainmemphis' "
+                        "like '%160mainmemphis%' "
                         "then 'Shelby County' "
                       "when lower(concat(adrno, adrstr, cityname)) "
-                        "like '170mainmemphis' "
+                        "like '%170mainmemphis%' "
                         "then 'State of Tennessee' "
                       "else own1 "
                   "end as own, "
@@ -535,3 +587,157 @@ def ownership():
     plt.tight_layout()
     plt.savefig('./images/top_owners.jpg', dpi=300)
     plt.close()
+
+
+def make_property_table():
+    #creates temporary table of parcels that are within neighborhood
+    q_nbhood_props =("create temporary table nbhood_props as "
+                    "select parcelid, lower(concat(adrno, adrstr)) paradrstr,"
+                    "initcap(concat(adrno, ' ', adrstr)) "
+                    "from sca_parcels p, sca_pardat, " 
+                        "geography.boundaries b "
+                    "where st_intersects(st_centroid(p.wkb_geometry), "
+                            "b.wkb_geometry) "
+                    "and name = '{}' "
+                    "and parcelid = parid")
+    engine_blight.execute(q_nbhood_props.format(nbhood))
+
+def property_table_exists():
+    try:
+        q_table = "select * from nbhood_props"
+        engine_blight.execute(q_table)
+        return True
+    except:
+        return False
+
+def property_conditions():
+    """
+    """
+    if not property_table_exists():
+        make_property_table()
+    df_props = pd.read_sql("select * from nbhood_props", engine_blight)
+    #selects all of the code enforcement violations over time
+    q_code = ("select * from "
+	"nbhood_props,"
+            "(select incident_id, category,request_type, reported_date, "
+            "summary, group_name, parcel_id "
+	"from com_incident) incident "
+	"where parcelid = parcel_id")
+    df_code = pd.read_sql(q_code, engine_blight)
+    
+    df_code.request_type = df_code.request_type.str.split('-').str[1]
+    df_code.reported_date = pd.to_datetime(df_code.reported_date)
+
+    #------------------------------------------------------------------------
+    #------------------line plot for Code Request by type--------------------
+    #------------------------------------------------------------------------
+    lbls = sorted(df_code.reported_date.dt.year.unique())
+    req_count = df_code.groupby('request_type').parcelid.count()
+    keep = req_count >= req_count.median()
+    reqs = req_count[keep].index
+    num_colors = len(reqs)
+    cm = plt.get_cmap('gist_rainbow')
+    fig, ax = plt.subplots()
+    #generate random colors to avoid duplicating colors 
+    ax.set_color_cycle([cm(1.*i/num_colors) for i in range(num_colors)])
+    for req in reqs:
+        y = (df_code[df_code.request_type == req]
+                            .request_type
+                            .groupby(df_code.reported_date.dt.year).count())
+        x = sorted(df_code[df_code.request_type == req].reported_date.dt.year.unique())
+        x_smoothe = np.linspace(x[0], x[-1], 200)
+        y_smoothe = spline(x, y, x_smoothe)
+        plt.plot(y_smoothe, label=req)
+    plt.legend(loc='upper center',bbox_to_anchor=(.5, 1.05), ncol=3,
+            fancybox=True, shadow=True, fontsize='xx-small')
+    ax.set_xticklabels(lbls)
+    ax.set_ylabel("Number of Requests")
+    ax.set_xlabel("Year")
+    plt.tight_layout()
+    plt.savefig('./images/code_viols_all.jpg', dpi=300)
+    plt.close()
+
+    #------------------------------------------------------------------------
+    #-----------------Heat Map for All Requests over time--------------------
+    #------------------------------------------------------------------------
+    df_code['month'] = df_code.reported_date.dt.month
+    df_code['year'] = df_code.reported_date.dt.year
+    df_code_grp = (df_code.groupby(['month', 'year'])
+                          .parcelid
+                          .count()
+                          .reset_index())
+    df_code_grp_pivot = df_code_grp.pivot('month', 'year', 'parcelid')
+    sns.heatmap(df_code_grp_pivot,cmap='Greens', 
+                center=df_code_grp.parcelid.median())
+    plt.xlabel("Year")
+    plt.xticks(rotation=45)
+    plt.ylabel("Month")
+    plt.title("Total Requests {0} to {1}".format(df_code_grp.year.min(),
+                                                 df_code_grp.year.max()))
+    plt.tight_layout()
+    plt.savefig('./images/code_req_heatmap.jpg', dpi=300, bbox_inches="tight")
+    plt.close()
+
+    #------------------------------------------------------------------------
+    #-----------------Bar Chart for most common Requests---------------------
+    #------------------------------------------------------------------------
+    
+    req_type_grp = (df_code[df_code.request_type.isin(reqs)]
+                           .groupby('request_type')
+                           .parcelid
+                           .count()
+                           .reset_index()
+                           .sort_values('parcelid'))
+    pos = range(len(req_type_grp))
+    plt.barh(pos, 
+            req_type_grp.parcelid, 
+            tick_label=req_type_grp.request_type.tolist(),
+            color='#440D0F')
+    plt.xticks(rotation=90)
+    plt.xlabel('Number of Code Requests')
+    plt.title('Common Code Requests by Type')
+    plt.tight_layout()
+    plt.savefig('./images/req_by_type.jpg', dpi=300)
+    plt.close()
+    
+    total_parcels = engine_blight.execute(("select count(parcelid) "
+                                            "from nbhood_props")).fetchone()[0]
+
+    q_tables = [
+        {"table": "mlgw_disconnects",
+          "parcelid": "parid", 
+          "options": ("and load_date = (select max(load_date) "
+          "from mlgw_disconnects) and mtrtyp = 'R'")
+        },
+        {"table": "com_incident",
+         "parcelid": "parcel_id",
+         "options": (" and reported_date >= '{}-01-01'".format(str(cur_year)))
+        },
+        {"table": "sca_pardat",
+         "parcelid": "parid",
+         "options": (" and luc = '000'")
+        }
+    ]
+
+    q_vals = ("select count(t.{parcelid}) from {table} t, nbhood_props p "
+              "where t.{parcelid} = p.parcelid {options}")
+
+    results = dict()
+    for t in q_tables:
+        result = engine_blight.execute(q_vals.format(**t)).fetchone()[0]
+        results[t["table"]] = result/float(total_parcels)
+
+def financial():
+    """
+    TODO:
+        - Median residential sale value for past year
+        - Percent change in appraisal since 2000
+        - Percent of properties with delinquent taxes
+        - Total number of mortgage originations for past year
+        - Median rent
+        - Percent of parcels that are tax sale eligible
+    """
+    if not property_table_exists():
+        make_property_table()
+    df_props = pd.read_sql("select * from nbhood_props", engine_blight)
+
