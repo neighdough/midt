@@ -1,8 +1,9 @@
 """
 python3.5
 TODO:
-    incorporate content from 
-    https://www.datacamp.com/community/tutorials/asyncio-introduction 
+    - Handle timeout error
+    - Attempt to implement multiprocessing
+
 """
 import asyncio
 from asyncio import Queue
@@ -26,10 +27,11 @@ async def get_table(session, page, data):
     #all_rows = []
     #for page in range(1, num_pages + 1):
     print("Page ", str(page)) 
-    with async_timeout.timeout(None):
+    with async_timeout.timeout(20):
         params = data
         params["page"] = page
         #nxt_req = requests.post(url_search, data=params)
+
         async with session.post(url_search, data=params) as response:
             txt = await response.read()
             nxt_soup = BeautifulSoup(txt, "lxml")
@@ -58,7 +60,7 @@ async def main(pages):
     cookie = init_req.cookies
     session = requests.Session()
     data = {
-        "BmStartDateSTART_DATE": "2017-01-01",
+        "BmStartDateSTART_DATE": "1800-01-01",
         "BmStartDateALIAS": "a",
         "BmStartDateEND_DATE": "2018-12-31",
         "orderby": "a.bmBusName",
