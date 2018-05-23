@@ -16,88 +16,88 @@ import pandas as pd
 import requests
 import random
 import aiohttp
+import concurrent
 
 
-url = "https://secure.tncountyclerk.com/"
-url_search = url+"businesslist/searchResults.php"
+class ScrapeClerk:
 
+    def __init__(self, start_date, end_date):
+        self.start_date = start_date
+        self.end_date = end_date
+        self.url = "https://secure.tncountyclerk.com/"
+        self.url_search = ("https://secure.tncountyclerk.com/"
+                            "businesslist/searchResults.php")
+        self.sessid = self.get_sessid(self.url)
+        self.params = {
+                    "BmStartDateSTART_DATE": self.start_date,
+                    "BmStartDateALIAS": "a",
+                    "BmStartDateEND_DATE": self.end_date,
+                    "orderby": "a.bmBusName",
+                    "orderbyvalue": "ASC",
+                    "countylist": "79",
+                    "token": self.sessid
+                    }
+        self.pages = self.get_pages(self.url_search, self.params)
+        self.loop = asyncio.get_event_loop()
 
-async def get_table(session, page, data):
+    def get_sessid(self, url):
+        init_req = requests.post(url)
+        return init_req.cookies["PHPSESSID"]
 
-    #all_rows = []
-    #for page in range(1, num_pages + 1):
-    print("Page ", str(page)) 
-    with async_timeout.timeout(20):
-        params = data
-        params["page"] = page
-        #nxt_req = requests.post(url_search, data=params)
+    def get_pages(self, url, data):
+        req = requests.post(self.url_search, data=data)
+        soup = BeautifulSoup(req.text, "html.parser")
+        #get list of links to pages containing all results, pull the last one and
+        #use that to iterate all results
+        page_hyperlinks = soup.find_all("a", {"class": "navigation"})
+        #pages = asyncio.Queue(loop=self.loop)
+        pages =[i for i in range(1, int(page_hyperlinks[-1].contents[0]) + 1)]
+        return pages
 
-        async with session.post(url_search, data=params) as response:
-            txt = await response.read()
-            nxt_soup = BeautifulSoup(txt, "lxml")
-            table = nxt_soup.find(text="Business Name").find_parent("table")
-            all_rows = []
-            for row in table.find_all("tr"):
-                cur_row = [cell.get_text(strip=True) for cell in row.find_all("td")]
-                if len(cur_row) == 5:
-                    all_rows.append(cur_row)
-            cols = ["business", "product", "address", "owner", "date"] 
-            df = pd.DataFrame(all_rows, columns=cols)
-            with open('./buslic.csv', 'a') as f_handle:
-                df.to_csv(f_handle, header=False)
-            return await response.release()
+    async def get_table(self, session, page, data):
+        print("Page ", str(page)) 
+        with async_timeout.timeout(20):
+            params = data
+            await asyncio.sleep(.5)
+            params["page"] = self.pages.pop(self.pages.index(page))
+            async with session.post(self.url_search, data=params) as response:
+                txt = await response.read()
+                nxt_soup = BeautifulSoup(txt, "lxml")
+                table = nxt_soup.find(text="Business Name").find_parent("table")
+                all_rows = []
+                for row in table.find_all("tr"):
+                    cur_row = [cell.get_text(strip=True) for cell in row.find_all("td")]
+                    if len(cur_row) == 5:
+                        all_rows.append(cur_row)
+                cols = ["business", "product", "address", "owner", "date"] 
+                df = pd.DataFrame(all_rows, columns=cols)
+                with open('./buslic.csv', 'a') as f_handle:
+                    df.to_csv(f_handle, header=False)
+                return await response.release()
 
-    #await asyncio.sleep(random.random())
-    #await queue.put(all_rows)
-    #await queue.put(None)
+    def cancel_tasks(self):
+        print("Cancelling tasks")
+        asyncio.gather(*asyncio.Task.all_tasks()).cancel()
+        self.loop.stop()
+        # self.loop.close()
 
-#    msg = "Pulling table for page {}".format(str(page))
-#    return msg
+    async def scrape(self, pages):
 
-async def main(pages):
+        async with aiohttp.ClientSession(loop=self.loop) as session:
+            tasks = [self.get_table(session, page, self.params) for page in self.pages]
+            await asyncio.gather(*tasks)
 
-    init_req = requests.post(url)
-    cookie = init_req.cookies
-    session = requests.Session()
-    data = {
-        "BmStartDateSTART_DATE": "1800-01-01",
-        "BmStartDateALIAS": "a",
-        "BmStartDateEND_DATE": "2018-12-31",
-        "orderby": "a.bmBusName",
-        "orderbyvalue": "ASC",
-        "countylist": "79",
-        "token": init_req.cookies["PHPSESSID"]
-        }
-
-
-    req = requests.post(url_search, data=data)
-    soup = BeautifulSoup(req.text, "html.parser")
-    #get list of links to pages containing all results, pull the last one and
-    #use that to iterate all results
-    page_hyperlinks = soup.find_all("a", {"class": "navigation"})
-    pages = range(1, int(page_hyperlinks[-1].contents[0]) + 1)
-
-    async with aiohttp.ClientSession(loop=loop) as session:
-        tasks = [get_table(session, page, data) for page in pages]
-        await asyncio.gather(*tasks)
-
-    #full_table = [get_table(page) for page in pages]
-    #completed, pending = yield asyncio.wait(full_table)
-    #for item in completed:
-        #print(item.result())
-
-
-if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main(loop))
-   
-    # print("Total number of pages: ", len(pages))
-    # cols = ["business", "product", "address", "owner", "date"]
-    # df = pd.DataFrame(columns = cols)
-    # q = Queue()        
-    # event_loop = asyncio.get_event_loop()
-    # try:
-        # event_loop.run_until_complete(main(pages))
-    # except:
-        # event_loop.close()
+    def start(self):
+        try:
+            self.loop.run_until_complete(self.scrape(self.loop))
+        except :#asyncio.TimeoutError:
+            print("------------------/nTimeout, reconnecting")
+            self.cancel_tasks()
+            self.sessid = self.get_sessid(self.url)
+            self.params["token"] = self.sessid
+            #self.get_table(session, page, params)
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(asyncio.new_event_loop())
+            self.loop = asyncio.get_event_loop()
+            self.loop.run_until_complete(self.scrape(self.loop))
 
