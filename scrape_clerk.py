@@ -17,7 +17,7 @@ import requests
 import random
 import aiohttp
 import concurrent
-
+from lxml.html import fromstring
 
 class ScrapeClerk:
 
@@ -39,6 +39,8 @@ class ScrapeClerk:
                     }
         self.pages = self.get_pages(self.url_search, self.params)
         self.loop = asyncio.get_event_loop()
+        self.completed = []
+        self.proxies = self.get_proxies()
 
     def get_sessid(self, url):
         init_req = requests.post(url)
@@ -56,10 +58,11 @@ class ScrapeClerk:
 
     async def get_table(self, session, page, data):
         print("Page ", str(page)) 
-        with async_timeout.timeout(20):
+        with async_timeout.timeout(None):
             params = data
             await asyncio.sleep(.5)
             params["page"] = self.pages.pop(self.pages.index(page))
+            proxy = "http://" + self.proxies[random.randint(0, len(self.proxies)-1)]
             async with session.post(self.url_search, data=params) as response:
                 txt = await response.read()
                 nxt_soup = BeautifulSoup(txt, "lxml")
@@ -73,6 +76,8 @@ class ScrapeClerk:
                 df = pd.DataFrame(all_rows, columns=cols)
                 with open('./buslic.csv', 'a') as f_handle:
                     df.to_csv(f_handle, header=False)
+                await asyncio.sleep(.25)
+                self.completed.append(page)
                 return await response.release()
 
     def cancel_tasks(self):
@@ -86,18 +91,40 @@ class ScrapeClerk:
         async with aiohttp.ClientSession(loop=self.loop) as session:
             tasks = [self.get_table(session, page, self.params) for page in self.pages]
             await asyncio.gather(*tasks)
+    
+    def restart(self, completed):
+        all_pages = self.get_pages(self.url, self.params)
+        self.pages = [p for p in all_pages if p not in self.completed]
+        self.completed = []
+        self.loop.run_until_complete(self.scrape(self.loop))
 
     def start(self):
-        try:
-            self.loop.run_until_complete(self.scrape(self.loop))
-        except :#asyncio.TimeoutError:
-            print("------------------/nTimeout, reconnecting")
-            self.cancel_tasks()
-            self.sessid = self.get_sessid(self.url)
-            self.params["token"] = self.sessid
-            #self.get_table(session, page, params)
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(asyncio.new_event_loop())
-            self.loop = asyncio.get_event_loop()
-            self.loop.run_until_complete(self.scrape(self.loop))
+        # try:
+        self.loop.run_until_complete(self.scrape(self.loop))
+        # except asyncio.TimeoutError:
+            # print("------------------/nTimeout, reconnecting")
+            # self.cancel_tasks()
+            # self.sessid = self.get_sessid(self.url)
+            # self.params["token"] = self.sessid
+            # #self.get_table(session, page, params)
+            # self.loop = asyncio.new_event_loop()
+            # asyncio.set_event_loop(asyncio.new_event_loop())
+            # self.loop = asyncio.get_event_loop()
+            # self.loop.run_until_complete(self.scrape(self.loop))
 
+    def get_proxies(self):
+        """
+        generate list of proxy sites.
+        modified from 
+        https://www.scrapehero.com/how-to-rotate-proxies-and-ip-addresses-using-python-3/
+        """
+        url = 'https://us-proxy.org/'
+        response = requests.get(url)
+        parser = fromstring(response.text)
+        proxies = [] 
+        for i in parser.xpath('//tbody/tr')[:10]:
+            if i.xpath('.//td[7][contains(text(),"no")]'):
+                #Grabbing IP and corresponding PORT
+                proxy = ":".join([i.xpath('.//td[1]/text()')[0], i.xpath('.//td[2]/text()')[0]])
+                proxies.append(proxy)
+        return proxies 
