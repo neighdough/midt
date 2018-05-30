@@ -36,7 +36,7 @@ import numpy as np
 from scipy.interpolate import spline
 from pywaffle import Waffle
 
-params = cnx_params.blight_local
+params = cnx_params.blight#_local
 engine_blight = utils.connect(**params)
 #engine_census = utils.connect(**cnx_params.census)
 pd.set_option('display.width', 180)
@@ -203,6 +203,9 @@ def get_dates(month):
     last_day = calendar.monthrange()[1]
 
 def get_tract_values(nbhood):
+    """
+    
+    """
     q = ("select geoid10 from geography.tiger_tract_2010 t, "
             "geography.bldg_cdc_boundaries b "
          "where st_intersects(t.wkb_geometry, b.wkb_geometry) "
@@ -589,18 +592,28 @@ def ownership():
     plt.close()
 
 
-def make_property_table():
+def make_property_table(schema="public", table="sca_parcels"):
     #creates temporary table of parcels that are within neighborhood
+    
+    if table == "sca_parcels":
+        pardat = "sca_pardat"
+    else:
+        pardat = "sca_pardat_2001"
+    params = {"schema":schema,
+              "table":table,
+              "nbhood":nbhood,
+              "pardat":pardat}
+
     q_nbhood_props =("create temporary table nbhood_props as "
                     "select parcelid, lower(concat(adrno, adrstr)) paradrstr,"
                     "initcap(concat(adrno, ' ', adrstr)) "
-                    "from sca_parcels p, sca_pardat, " 
+                    "from {schema}.{table} p, {pardat}, " 
                         "geography.boundaries b "
                     "where st_intersects(st_centroid(p.wkb_geometry), "
                             "b.wkb_geometry) "
-                    "and name = '{}' "
+                    "and name = '{nbhood}' "
                     "and parcelid = parid")
-    engine_blight.execute(q_nbhood_props.format(nbhood))
+    engine_blight.execute(q_nbhood_props.format(**params))
 
 def property_table_exists():
     try:
@@ -740,4 +753,6 @@ def financial():
     if not property_table_exists():
         make_property_table()
     df_props = pd.read_sql("select * from nbhood_props", engine_blight)
+    
+
 
