@@ -8,10 +8,17 @@ Example:
 TODO:
     *methods:
         - run_report
-        - make_property_table: generate temp table containing all parcels within the neighborhood
-            this will become te basis for all subsequent property queries
         - check_directory: check if directory for report exists, create if not
         - 
+    *edits:
+        -Adjust labels on Total Requests 2008 to 2017 to make chart a bit 
+            easier to understand
+        -Check labels for line chart for Code Violations over time to make 
+            sure that the complete label is shown (e.g. Accumulation of 
+            Stagnant)
+        -Add title for Population change chart
+        -Check to make sure full history is shown (code violations only 
+            displayed to 2012)
 
     *set up project
         - create directory using neighborhood name
@@ -753,6 +760,17 @@ def financial():
     if not property_table_exists():
         make_property_table()
     df_props = pd.read_sql("select * from nbhood_props", engine_blight)
+    q_appr = ("select parcelid, apr17, apr01 "
+              "from nbhood_props, "
+              "(select a17.parid, a01.rtotapr apr01, a17.rtotapr apr17 "
+                "from sca_asmt a17, geography.sca_asmt_2001 a01 "
+                "where a17.parid = a01.parid) a "
+              "where parcelid = parid")
+    df_appr = pd.read_sql(q_appr, engine_blight)
+    df_appr["apr01_adj"] = utils.inflate("2001", "2017", df_appr.apr01)
+    pct_chg = lambda y1, y2: (y2-y1)/y1*100
+    df_appr["pct_chg"] = pct_chg(df_appr.apr01_adj, df_appr.apr17)
+
     
 
 
