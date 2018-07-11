@@ -57,8 +57,6 @@ def optimalK(data, nrefs=3, maxClusters=15, step=1):
     gaps = np.zeros((len(range(1, maxClusters, step)),))
     resultsdf = dict()
     for gap_index, k in enumerate(range(1, maxClusters, step)):
-	print k
-
         # Holder for reference dispersion results
         refDisps = np.zeros(nrefs)
 
@@ -70,21 +68,21 @@ def optimalK(data, nrefs=3, maxClusters=15, step=1):
             randomReference = np.random.random_sample(size=data.shape)
             
             # Fit to it
-            km = MiniBatchKMeans(k, random_state=RANDOM_STATE)
-            km.fit(randomReference)
+            mbk = MiniBatchKMeans(k, random_state=RANDOM_STATE)
+            mbk.fit(randomReference)
             
-            refDisp = km.inertia_
+            refDisp = mbk.inertia_
             refDisps[i] = refDisp
 
         # Fit cluster to original data and create dispersion
-        km = MiniBatchKMeans(k, random_state=RANDOM_STATE)
-        km.fit(data)
+        mbk = MiniBatchKMeans(k, random_state=RANDOM_STATE)
+        mbk.fit(data)
         
-        origDisp = km.inertia_
+        origDisp = mbk.inertia_
 
         # Calculate gap statistic
         gap = np.log(np.mean(refDisps)) - np.log(origDisp)
-	print '\t', gap, '\n'
+	print k, '\t', gap, '\n'
         # Assign this loop's gap statistic to gaps
         gaps[gap_index] = gap
         resultsdf[k] = gap
@@ -95,10 +93,46 @@ def optimalK(data, nrefs=3, maxClusters=15, step=1):
     # index 2 = 3 clusters are optimal
     return (gaps.argmax() + 1, resultsdf)  
 
-cc = pd.DataFrame.from_records(kmm.cluster_centers_, 
+#Test: reclass 5 to 4 and rerun
+df.loc[df.rating == 5, "rating"] = 4
+
+km = KMeans(n_clusters=1000, n_jobs=-1)
+km.fit(X)        
+cc = pd.DataFrame.from_records(km.cluster_centers_, 
         columns=['rating', 'x', 'y'])
 cc.x = rescale(cc.x, df.x)
 cc.y = rescale(cc.y, df.y)
-df['labels'] = pd.Series.from_array(kmm.labels_,name='labels')
-cc.to_csv('cluster_center_k{}.csv'.format(str(k)))
-df.to_csv('parcel_file_k{}.csv'.format(str(k)))
+df['labels'] = pd.Series.from_array(km.labels_,name='labels')
+pt = 'SRID=2274:Point({0} {1})'
+geom = lambda x: pt.format(x['x'], x['y'])
+df['wkb_geometry'] = df[['x', 'y']].apply(geom, axis=1)
+df.to_sql("bcs_rating_kmeans", engine, if_exists="replace")
+
+q_temp = ("create temporary table cluster_poly as "
+          "with s as "
+          "(select labels, count(parcelid) npar, "
+          "st_convexhull(st_collect(wkb_geometry)) geom "
+          "from bcs_rating_kmeans where rating=4 "
+          "group by labels) "
+          "select * from s ")
+engine.execute(q_temp)
+bound = pd.read_sql(("select labels, npar, st_area(geom)/43560 acres, "
+                     "npar/(st_area(geom)/43560) prop_den " 
+                         "from cluster_poly"), engine)
+
+q_vac = ("select labels, npar, st_area(p.geom)/43560 acres, "
+	 "npar/(st_area(p.geom)/43560) prop_den, "
+	 "count(index),count(index)/(st_area(p.geom)/43560) vac_den "
+	 "from bcs_rating_kmeans_cluster_poly p, "
+	 "(select st_transform(ST_SetSRID(ST_Point(lon, lat),4326), 2274) geom, index "
+	 "from mlgw_disconnects where load_date = '2018-02-05') m "
+	 "where st_intersects(m.geom, p.geom) "
+	 "group by labels, npar, acres, prop_den"
+        )
+vac = pd.read_sql(q_vac, engine)
+vac['combined'] = scale(vac.prop_den) + scale(vac.vac_den)
+
+cc.to_csv('cluster_center_k{}_06222018.csv'.format(str(k)))
+df.to_csv('parcel_file_k{}_06222018.csv'.format(str(k)))
+
+
