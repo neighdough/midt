@@ -1,7 +1,23 @@
-"""Module to pull monthly reports for code violators. Takes the desired month 
-for the report as input and produces charts and maps with information about
-the top code violators for that month. It also updates a running list of the 
-top violators for the current year.
+"""
+Generate reports for code violators or neighborhood pre-defined neighborhood.
+Takes the desired month for the report as input and produces charts and maps 
+with information about the top code violators for that month. It also updates 
+a running list of the top violators for the current year.
+
+Usage:
+    nbhood_reporty.py violator <month>... [--year=<year>]  
+    nbhood_reporty.py neighborhood [neighborhood_name]
+
+Options:
+    -h, --help      : show help document
+    violator        : Generate report for top code violators by ownership
+    <month>         : Month or months to be used as the range for the 
+                      analysis. Months can either be integer or text values 
+                      (i.e. 1 or Jan)
+    --year=<year>   : Optional parameter to change the year that the report
+                      should be geneated for
+    neighborhood    : Generate neighborhood
+        
 
 Example:
     $ python reports.py may
@@ -26,22 +42,30 @@ TODO:
     
 
 """
-import sys
-import os
-sys.path.append('/home/nate/source')
 from caeser import utils
-from config import cnx_params
-import pandas as pd
-import matplotlib.pyplot as plt
-import datetime
 import calendar
+from config import cnx_params
+import datetime
+from docopt import docopt
+from math import log
+import matplotlib.pyplot as plt
+import pandas as pd
+from PyQt4.QtCore import QFileInfo, QSize
+from PyQt4.QtXml import QDomDocument
+from PyQt4.QtGui import QImage, QPainter
+from pywaffle import Waffle
+import numpy as np
+import os
+from qgis.core import (QgsProject, QgsComposition, QgsApplication, 
+        QgsProviderRegistry, QgsRectangle, QgsPalLayerSettings)
+from qgis.gui import QgsMapCanvas, QgsLayerTreeMapCanvasBridge
+from scipy.interpolate import spline
 import seaborn as sns
 from sqlalchemy import text
+import sys
+sys.path.append('/home/nate/source')
 from titlecase import titlecase
-from math import log
-import numpy as np
-from scipy.interpolate import spline
-from pywaffle import Waffle
+
 
 params = cnx_params.blight#_local
 engine_blight = utils.connect(**params)
@@ -52,13 +76,15 @@ os.chdir(('/home/nate/dropbox-caeser/Data/MIDT/Data_Warehouse/'
 nbhood = 'Klondike Smokey City CDC'
 cur_year = datetime.datetime.today().year
 
-def run_report(period):
-    """Primary function that handles the query and generates the main output
+def run_violator_report(period, yr=None):
+    """
+    Primary function that handles the query and generates the main output
     for the report.
     
     Args:
-        month (str): Name of the month for the report. Can either be the full
-            name or a 3-letter abbreviation.
+        period (int): Numeric value of the month for the report (i.e. 5 = May,
+        6 = June, etc.)
+        yr (int, optional): Year for the report
     Returns:
         None
     TODO:
@@ -68,6 +94,7 @@ def run_report(period):
     os.chdir(("/home/nate/dropbox-caeser/Data"
               "/MIDT/Data_Warehouse/reports/"
               "monthly_code_violators"))
+    year = yr if yr else cur_year
     if len(period) == 1:
         start = period[0]
         finish = period[0]
@@ -77,32 +104,10 @@ def run_report(period):
         print ("Incorrect input format. Input can either be a single month, "
                 "or a start month and finish month for a range.")
         return 
-    
-    # q = ("select case "
-            # "when lower(own1) like 'shelby county tax sale%' "
-                # "then 'Shelby County Tax Sale' "
-            # "when lower(concat(adrno,adrdir,adrstr,adrsuf)) = '125nmainst' "
-                # "then 'City of Memphis' "
-                  # "else trim(both ' ' from own1) end as own, "
-            # "par_adr, p.parcelid, "
-	    # "reported_date, request_type, summary, lon, lat " 
-        # "from " 
-	    # "(select parcelid, "
-                # "concat(adrno, ' ', adrstr, ' ', adrsuf, ', ', zip1) par_adr, "
-                    # "summary, reported_date, "
-                # "split_part(request_type, '-', 2) request_type, "
-                     # "st_x(st_centroid(wkb_geometry)) lon, "
-                # "st_y(st_centroid(wkb_geometry)) lat "
-                # "from sca_pardat, sca_parcels, com_incident "
-            # "where parcelid = parid "
-                # "and parcelid = parcel_id "
-                # "and reported_date "
-                    # "between '2018-01-01'::timestamp "
-                    # "and '2018-01-31'::timestamp) p,"
-	# "sca_owndat "
-        # "where parcelid = parid "
-        # "order by own;")
-    
+    start_date = format_date(start, year)[:-2] + "01"
+    end_date = format_date(finish, year)
+    print "Start: ", start_date, "\nEnd: ", end_date
+
     ignore = ["city of memphis", "shelby county tax sale", 
               "health educational and housing"]
 
@@ -120,8 +125,8 @@ def run_report(period):
     	"where parcelid = parid "
     	    "and parcelid = parcel_id "
     	    "and reported_date "
-    		"between '2018-{start}-01'::timestamp "
-                    "and '2018-{finish}-31'::timestamp) p,"
+    		"between '{start_date}'::timestamp "
+                    "and '{end_date}'::timestamp) p,"
 	"sca_owndat "
         "where parcelid = parid "
         "and lower(own1) not similar to '%({ignore})%' "
@@ -133,19 +138,13 @@ def run_report(period):
     def acronyms(word, **kwargs):
         if word in ["CSMA", "LLC", "(RS)", "RS", "FBO", "II"]:
             return word.upper()
-    
-#    ignore = ("city of memphis|shelby county tax sale|"
-#                "memphis educational and housing facility")
-    vals = {"start": start, "finish": finish,
+
+    vals = {"start_date": start_date, 
+            "end_date": end_date,
             "ignore": "|".join(ignore)}
     df = pd.read_sql(text(q.format(**vals)), engine_blight)
     #remove references to city and county owned properties
-#    df = df[~df.own.str.lower().str.match(ignore)]
     df.own = df.own.apply(titlecase, args=[acronyms]) 
-    # own_group = (df.groupby('own')['own']
-                    # .count()
-                    # .sort_values(ascending=False)
-                    # .head(10))
     own_group = (df.groupby('own', as_index=False)
                     .count()
                     .sort_values(by='parcelid', ascending=False)
@@ -175,7 +174,7 @@ def run_report(period):
     plt.setp(labels, rotation=90, fontsize=8)
     plt.legend(title="Violation Type", fontsize=8)
     plt.tight_layout()
-    fig_name = 'owner_bar_stacked_{}_2018.jpg'.format(month)
+    fig_name = 'owner_bar_stacked_{}.jpg'.format(end_date)
     plt.savefig(fig_name, dpi=300)
 
 def make_map(dframe, group):
@@ -191,8 +190,15 @@ def make_map(dframe, group):
     dframe = dframe.merge(group, on='own')
     dframe.index += 1
     dframe.to_csv('owner_coords.csv', index_label='id', encoding='utf-8')
+    
+    canvas = QgsMapCanvas()
+    project = QgsProject.instance()
+    project.read(QFileInfo("map.qgs"))
+    bridge = QgsLayerTreeMapCanvasBridge(
+            project.layerTreeRoot(), canvas)
+    bridge.setCanvasLayers()
 
-def get_dates(month):
+def format_date(month, year):
     """
     Formats date strings to be used in SQL query to pull table from DB.
     
@@ -202,12 +208,14 @@ def get_dates(month):
         Tuple containing formatted date strings in the form 'YYYY-MM-dd' to be
             passed into SQL query to specify date range for the report.
     """
-    if len(month) > 3:
-        month = month[:3]
-    else:
-        month = month.lower()
+    
     month_abbr = {v.lower(): k for k, v in enumerate(calendar.month_abbr)}
-    last_day = calendar.monthrange()[1]
+    if not month.isdigit():
+        month = month_abbr[month[:3].lower()]
+#    else:
+#        month = int(month)
+    last_day = calendar.monthrange(year, int(month))[1]
+    return "{0}-{1}-{2}".format(year, month, last_day)
 
 def get_tract_values(nbhood):
     """
@@ -772,5 +780,16 @@ def financial():
     df_appr["pct_chg"] = pct_chg(df_appr.apr01_adj, df_appr.apr17)
 
     
+def main(args):
+    if args["neighborhood"]:
+        pass
+    elif args["violator"]:
+        #print args
+        run_violator_report(args["<month>"], 
+                            args["--year"]
+                           )
 
+if __name__=="__main__":
+    args = docopt(__doc__)
+    main(args)
 
