@@ -5,22 +5,26 @@ with information about the top code violators for that month. It also updates
 a running list of the top violators for the current year.
 
 Usage:
-    nbhood_reporty.py violator <month>... [--year=<year>]  
-    nbhood_reporty.py neighborhood [neighborhood_name]
+    nbhood_reports.py violator <month>... [--year=<year>]  
+    nbhood_reports.py neighborhood <neighborhood_name>
 
 Options:
-    -h, --help      : show help document
-    violator        : Generate report for top code violators by ownership
-    <month>         : Month or months to be used as the range for the 
-                      analysis. Months can either be integer or text values 
-                      (i.e. 1 or Jan)
-    --year=<year>   : Optional parameter to change the year that the report
-                      should be geneated for
-    neighborhood    : Generate neighborhood
+    -h, --help          : show help document
+    violator            : Generate report for top code violators by ownership
+    <month>             : Month or months to be used as the range for the 
+                          analysis. Months can either be integer or text values 
+                          (i.e. 1 or Jan)
+    --year=<year>       : Optional parameter to change the year that the report
+                          should be geneated for
+    neighborhood        : Generate neighborhood
+    <neighborhood_name> : Name of neighborhood that the report should be generated for.
+                          Neighborhoods with more than one word should be enclosed in 
+                          quotation marks.
         
 
 Example:
-    $ python reports.py may
+    $ python nbhood_reports.py violator may
+    $ python nbhood_reports.py neighborhood "Klondike Smokey City CDC"
 TODO:
     *methods:
         - run_report
@@ -39,9 +43,8 @@ TODO:
     *set up project
         - create directory using neighborhood name
         - switch to project directory
-    
-
 """
+
 from caeser import utils
 import calendar
 from config import cnx_params
@@ -50,31 +53,169 @@ from docopt import docopt
 from math import log
 import matplotlib.pyplot as plt
 import pandas as pd
-from PyQt4.QtCore import QFileInfo, QSize
-from PyQt4.QtXml import QDomDocument
-from PyQt4.QtGui import QImage, QPainter
 from pywaffle import Waffle
 import numpy as np
 import os
 from qgis.core import (QgsProject, QgsComposition, QgsApplication, 
-        QgsProviderRegistry, QgsRectangle, QgsPalLayerSettings)
+                       QgsProviderRegistry, QgsRectangle, QgsPalLayerSettings,
+                       QgsComposerAttributeTableV2, QgsComposerMap, QgsComposerLegend,
+                       QgsComposerPicture, QgsComposerLabel)
 from qgis.gui import QgsMapCanvas, QgsLayerTreeMapCanvasBridge
+from PyQt4.QtCore import QFileInfo, QSize
+from PyQt4.QtXml import QDomDocument
+from PyQt4.QtGui import QImage, QPainter
 from scipy.interpolate import spline
 import seaborn as sns
 from sqlalchemy import text
 import sys
 sys.path.append('/home/nate/source')
 from titlecase import titlecase
+import shutil
 
 
-params = cnx_params.blight#_local
-engine_blight = utils.connect(**params)
-#engine_census = utils.connect(**cnx_params.census)
+engine_blight = utils.connect(**cnx_params.blight)
+engine_census = utils.connect(**cnx_params.census)
 pd.set_option('display.width', 180)
-os.chdir(('/home/nate/dropbox-caeser/Data/MIDT/Data_Warehouse/'
-          'reports/neighborhood/generated_reports/KlondikeSmokeyCityCDC/'))
-nbhood = 'Klondike Smokey City CDC'
+os.chdir("/home/nate/dropbox-caeser/Data/MIDT/Data_Warehouse/reports")
+#nbhood = 'Klondike Smokey City CDC'
 cur_year = datetime.datetime.today().year
+ACS_SCHEMA = "acs5yr_2015"
+FILEID = ACS_SCHEMA.split("_")[-1]+"e5"
+
+class QgisMap:
+    """
+    Class used to automatically export images from pre-formatted QGIS maps. Individual
+    map elements can be added to each project to allow for a little more flexibility
+    in the maps that are automated.
+    """
+    
+    def __init__(self, project_name, template_name, *args, **kwargs):
+        """
+        
+        Parameters:
+            project_name (str): Name of qgs file containing maps to be generated
+            template_name (str): Each QGIS map composer must be saved as a template 
+                (qpt) file in order to be loaded for automated map generation.
+        """
+        gui_flag = True
+        self.app = QgsApplication(sys.argv, True)
+        self.app.setPrefixPath("/usr", True)
+        self.app.initQgis()
+
+        self.project_name = project_name
+        self.template_name = template_name
+        self.canvas = QgsMapCanvas()
+        self.project = QgsProject.instance()
+        self.project.read(QFileInfo(project_name))
+        self.bridge = QgsLayerTreeMapCanvasBridge(
+                QgsProject.instance().layerTreeRoot(), self.canvas)
+        self.bridge.setCanvasLayers()
+        self.template_file = file(self.template_name)
+        self.template_content = self.template_file.read()
+        self.template_file.close()
+        self.document = QDomDocument()
+        self.document.setContent(self.template_content)
+        self.composition = QgsComposition(self.canvas.mapSettings())
+        self.composition.loadFromTemplate(self.document)
+
+        self.element_methods = {QgsComposerAttributeTableV2:
+                                    {"refreshAttributes":[]},
+                                QgsComposerMap: 
+                                    {"setMapCanvas": [self.canvas], 
+                                     "zoomToExtent": ["rectangle"]},
+                                QgsComposerLegend: 
+                                    {"updateLegend": []},
+                                QgsComposerPicture: 
+                                    {"setPicturePath": ["image_path"], 
+                                     "refreshPicture":[]},
+                                QgsComposerLabel: 
+                                    {"setText": ["input_text"]}
+                                }
+
+    
+    def update_layers(self):
+        pass
+
+    def add_label(self, layer_index, field_name):
+        """
+        Enable label for layer in map canvas.
+
+        Args:
+            layer_index (int): index position of layer in project layer tree (TOC)
+            field_name (str): name of field used for label
+
+        Returns:
+            None
+        """
+        lyr = self.canvas.layer(layer_index)
+        lbl = QgsPalLayerSettings()
+        lbl.readFromLayer(lyr)
+        lbl.enabled = True
+        lbl.fieldName = field_name
+        self.canvas.refresh()
+
+    def add_element(self, item_id, *args, **kwargs):
+        """
+        Add elements to the map composer to be displayed on the exported image.
+
+        Args:
+            item_id (str): Item id for the composer element as listed in the print
+                composer in QGIS.
+
+        Keyword Args:
+            image_path (str): Full path including extension to image to be used with the
+                setPicturePath method
+
+        Returns:
+            None
+        """
+        composer_item = self.composition.getComposerItemById(item_id)
+        if type(composer_item) == QgsComposerAttributeTableV2:
+            composer_item = composer_item.multiFrame()
+        for method, params in self.element_methods[type(composer_item)].iteritems():
+            print method, params
+            getattr(composer_item, method)(*params)
+            # if "image_path" in kwargs and method == "setPicturePath":
+                # getattr(composer_item, method)(kwargs.get("image_path"))
+            # elif type(composer_item) == QgsComposerMap:
+                # getattr(composer_item, method)(self.canvas)
+            # else:        
+                # getattr(composer_item, method)()
+        self.composition.refreshItems()
+        self.canvas.refresh()
+
+
+    def save_map(self, map_name, extension="jpg", dpi=300):
+        """
+        Export map as image.
+
+        Args:
+            map_name (str): name of saved image
+            extension (str, optional): Type of image to be saved (e.g. jpg, png, etc.)
+            dpi (int, optional): Resolution of saved image.
+
+        Returns:
+            None
+        """
+
+        dpmm = dpi/25.4
+        width = int(dpmm * self.composition.paperWidth())
+        height = int(dpmm * self.composition.paperHeight())
+        image = QImage(QSize(width, height), QImage.Format_ARGB32)
+        image.setDotsPerMeterX(dpmm * 1000)
+        image.setDotsPerMeterY(dpmm * 1000)
+        image.fill(0)
+
+        imagePainter = QPainter(image)
+        self.composition.renderPage(imagePainter, 0)
+        imagePainter.end()
+        image.save(".".join([map_name,extension]), extension)
+        self.project.clear()
+        self.app.exitQgis()
+    
+    def close(self):
+        self.project.clear()
+        self.app.exitQgis()
 
 def run_violator_report(period, yr=None):
     """
@@ -87,13 +228,8 @@ def run_violator_report(period, yr=None):
         yr (int, optional): Year for the report
     Returns:
         None
-    TODO:
-        Adjust selection query to adjust start day and end day based upon
-        input months.
     """
-    os.chdir(("/home/nate/dropbox-caeser/Data"
-              "/MIDT/Data_Warehouse/reports/"
-              "monthly_code_violators"))
+    os.chdir("./monthly_code_violators")
     year = yr if yr else cur_year
     if len(period) == 1:
         start = period[0]
@@ -189,14 +325,17 @@ def make_map(dframe, group):
 #    dframe = dframe.join(owner_rank, on='own', rsuffix='_rank')
     dframe = dframe.merge(group, on='own')
     dframe.index += 1
-    dframe.to_csv('owner_coords.csv', index_label='id', encoding='utf-8')
+#    dframe.to_csv('owner_coords.csv', index_label='id', encoding='utf-8')
+    dframe.to_sql("owner_coords", blight_engine, 
+                    schema="reports", if_exists="replace", index_label="id")
     
-    canvas = QgsMapCanvas()
-    project = QgsProject.instance()
-    project.read(QFileInfo("map.qgs"))
-    bridge = QgsLayerTreeMapCanvasBridge(
-            project.layerTreeRoot(), canvas)
-    bridge.setCanvasLayers()
+    nhood_map = QGIS_Map("map.qgs", "map_template.qgt")
+    logo_path = ("/home/nate/dropbox-caeser/CAESER/Logos"
+                             "/UofM_horiz_cmyk_CAESER.png")
+    nhood_map.add_element("logo", image_path=logo_path)
+    nhood_map.add_element("map")
+    nhood_map.add_element("legend")
+    nhood_map.add_element("table")
 
 def format_date(month, year):
     """
@@ -205,21 +344,28 @@ def format_date(month, year):
     Args:
         month (str):
     Returns:
-        Tuple containing formatted date strings in the form 'YYYY-MM-dd' to be
+        String containing formatted date strings in the form 'YYYY-MM-dd' to be
             passed into SQL query to specify date range for the report.
     """
     
     month_abbr = {v.lower(): k for k, v in enumerate(calendar.month_abbr)}
     if not month.isdigit():
         month = month_abbr[month[:3].lower()]
-#    else:
-#        month = int(month)
     last_day = calendar.monthrange(year, int(month))[1]
     return "{0}-{1}-{2}".format(year, month, last_day)
 
-def get_tract_values(nbhood):
+def get_tract_ids(nbhood):
     """
+    Helper function that gets all Census tract geoids for tracts that intersect 
+    neighborhood boundary.
+
+    Parameters:
+        nbhood (str): Neighborhood name. The neighborhood should already exist in the
+            Property Hub table `geography.boundaries`
     
+    Returns:
+        List: List of string values containing all geoids for Census tracts that 
+            intersect neighborhood boundary.
     """
     q = ("select geoid10 from geography.tiger_tract_2010 t, "
             "geography.bldg_cdc_boundaries b "
@@ -228,7 +374,7 @@ def get_tract_values(nbhood):
     tracts = engine_blight.execute(q.format(nbhood)).fetchall()
     return [i[0] for i in tracts]
 
-def run_census(nbhood=None):
+def neighborhood_profile(nbhood=None):
 
     tables = {'b02001':'Race', 
               'b19013': 'Median Household Income',
@@ -239,7 +385,11 @@ def run_census(nbhood=None):
               's16001': 'Language Spoken at Home'}
     years = [1970, 1980, 1990, 2000, 2010]
     cols = ", ".join(["pop%s" % str(i)[2:] for i in years])
-    tracts = get_tract_values(nbhood)
+    tracts = get_tract_ids(nbhood)
+    table_params = {"schema": ACS_SCHEMA,
+                   "fileid": FILEID,
+                   "tracts": "','".join(tracts)
+                   }
 
     q_pop = ("select tractid, {0} from ltdb.ltdb_std_fullcount "
              "where tractid in ('{1}');")
@@ -266,7 +416,7 @@ def run_census(nbhood=None):
                         loc: "{:,}".format(int(x))))
     plt.tight_layout()
 
-    plt.savefig('./images/pop_change_tracts.jpg', dpi=300)
+    plt.savefig('./Pictures/pop_change_tracts.jpg', dpi=300)
     plt.close()
     #--- Plots to compare neighborhood with County
     # ax = plt.subplot(111)
@@ -278,53 +428,54 @@ def run_census(nbhood=None):
     # ax.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x, 
                         # loc: "{:,}".format(int(x))))
     # plt.tight_layout()
-    # plt.savefig('./images/pop_change_nbhood_county.jpg', dpi=300)
+    # plt.savefig('./Pictures/pop_change_nbhood_county.jpg', dpi=300)
     # plt.close()
     
     #median income
-    q_inc = ("select * from acs5yr_2015.b19001 where geoid in ('{}')")
-    inc = pd.read_sql(q_inc.format("','".join(tracts)), engine_census)
+    q_inc = ("select * from {schema}.b19001 "
+             "where geoid in ('{tracts}') and fileid = '{fileid}'")
+    inc = pd.read_sql(q_inc.format(**table_params), engine_census)
     skip = ['geoid', 'name', 'stusab', 'sumlevel', 'fileid','id']
     inc_list = []
     for col in [col for col in inc.columns if col not in skip]:
         inc_list.append(inc[col].sum())
-    nbhood_mdn = calculate_median(inc_list)
+    nbhood_mdn = int(round(calculate_median(inc_list)))
 
     #poverty
     q_pov = ("select sum(b17001002) total, "
              "sum(b17001002)/sum(b17001001)*100 pct_bel_pov "
-             "from acs5yr_2015.b17001 "
-             "where geoid in ('{}');")
-    pov = pd.read_sql(q_pov.format("','".join(tracts)), engine_census)
+             "from {schema}.b17001 "
+             "where geoid in ('{tracts}') and fileid = '{fileid}';")
+    pov = engine_census.execute(q_pov.format(**table_params)).fetchone()
 
     #transportation
     q_trans = ("with agg as "
 		"(select sum(b08101001) total, sum(b08101009) car, "
                	        "sum(b08101017) carpool, sum(b08101025) trans,  "
                         "sum(b08101033) walk, sum(b08101041) other "
-                "from acs5yr_2015.b08101 "
-                "where geoid in ('{}') "
-                    "and fileid = '2015e5' ) "
+                "from {schema}.b08101 "
+                "where geoid in ('{tracts}') "
+                    "and fileid = '{fileid}' ) "
                 "select car/total*100 pct_car, carpool/total*100 pct_carpool, "
                     "trans/total*100 pct_trans, walk/total*100 pct_walk, "
                     "other/total*100 pct_other "
                 "from agg")
-    trans = pd.read_sql(q_trans.format("','".join(tracts)), engine_census)
+    trans = pd.read_sql(q_trans.format(**table_params), engine_census)
 
     q_move = ("with agg as "
 		"(select sum(b07001001) total, sum(b07001017) same_home,"
 		    "sum(b07001033) same_county, sum(b07001049) same_state,  "
                     "sum(b07001065) diff_state, sum(b07001081) diff_country "
-                 "from acs5yr_2015.b07001 "
-                 "where geoid in ('{}') "
-                "and fileid = '2015e5') "
+                 "from {schema}.b07001 "
+                 "where geoid in ('{tracts}') "
+                "and fileid = '{fileid}') "
             "select same_home/total*100 same_home, "
             "same_county/total*100 same_county, "
             "same_state/total*100 same_state, "
             "diff_state/total*100 diff_state, "
             "diff_country/total*100 diff_country "
             "from agg")
-    move = pd.read_sql(q_move.format("','".join(tracts)), engine_census)
+    move = pd.read_sql(q_move.format(**table_params), engine_census)
 
     q_ed = ("with agg as "
 		"(select sum(b15001001) total, "
@@ -358,22 +509,26 @@ def run_census(nbhood=None):
                 "sum(b15001042) + sum(b15001051) + "
                 "sum(b15001059) + sum(b15001067) + "
                 "sum(b15001075) + sum(b15001083) grad        "
-             "from acs5yr_2015.b15001 "
-                 "where geoid in ('{}')"
-                 "and fileid = '2015e5') "
+             "from {schema}.b15001 "
+                 "where geoid in ('{tracts}')"
+                 "and fileid = '{fileid}') "
             "select no_dip/total*100 no_dip, dip/total*100 dip,"
                 "assoc/total*100 assoc, bach/total*100 bach, "
                 "grad/total*100 grad "
             "from agg")
+    ed_vals = engine_census.execute(q_ed.format(**table_params)).fetchone()
+    ed_pct = [int(round(i)) for i in ed_vals]
 
     q_lang = ("with agg as "
 		"(select sum(b16001001) total, "
 	            "sum(b16001002) eng, sum(b16001003) span "
-         	"from acs5yr_2015.b16001 "
-                    "where geoid in ('{}') "
-                    "and fileid = '2015e5') "
+         	"from {schema}.b16001 "
+                    "where geoid in ('{tracts}') "
+                    "and fileid = '{fileid}') "
              "select eng/total*100 eng, span/total*100 span "
              "from agg")
+    lang_vals = engine_census.execute(q_lang.format(**table_params)).fetchone()
+    lang_pct = [int(round(i)) for i in lang_vals]
 
     age_labels = []
     for i in range(5, 90, 5):
@@ -389,7 +544,7 @@ def run_census(nbhood=None):
     female_index = range(27, 50)
     male_cols = build_age_query(male_index, (6,18,20), 8)
     female_cols = build_age_query(female_index, (29, 42, 44), 31)
-    q_age = "select {0} from acs5yr_2015.b01001 where geoid in ('{1}')"
+    q_age = "select {0} from {schema}.b01001 where geoid in ('{1}')"
     df_male = pd.read_sql(q_age.format(','.join(i for i in male_cols),
                             "','".join(i for i in tracts)), engine_census)
     df_female = pd.read_sql(q_age.format(','.join(i for i in female_cols),
@@ -412,7 +567,7 @@ def run_census(nbhood=None):
     axes[0].yaxis.tick_right()
     plt.tight_layout()
     fig.subplots_adjust(wspace=0.22)
-    plt.savefig('./images/pop_pyramid.jpg', dpi=300)
+    plt.savefig('./Pictures/pop_pyramid.jpg', dpi=300)
     plt.close()
 
     yticks = [0., .25, .5, .75, 1.]
@@ -429,7 +584,7 @@ def run_census(nbhood=None):
     plt.plot(x, [.5, .5], 'k')
     plt.plot(x, [.75, .75], '--k')
     plt.tight_layout()
-    plt.savefig('./images/mf_ratio.jpg', dpi=300)
+    plt.savefig('./Pictures/mf_ratio.jpg', dpi=300)
     plt.close()
     
 def build_age_query(var_index, twos, threes):
@@ -506,7 +661,7 @@ def calculate_median(incomedata):
 		sample_median = k_hat * pow(2, (1/theta_hat))
 	return sample_median
 
-def ownership():
+def ownership_profile():
     """
     """
 
@@ -554,17 +709,14 @@ def ownership():
             rows=5,
             values=vals,
             colors=('#ffffff', '#79B473'),
-#            grid={'color':'black', 'linestyle':'solid', 'linewidth':2},
-            #colors=('#003BD1', '#79B473'),
             title={'label': 'Ownership Occupancy Totals', 'loc':'center'},
             labels=["{0} ({1}%)".format(k, v) for k, v in vals.items()],
             legend={'loc': 'center', 'bbox_to_anchor': (0, -0.4), 
                 'ncol': len(own_totals), 'framealpha': 0})
-#    plt.grid(color='k', linestyle='solid', linewidth=2)
     ax = plt.gca()
     ax.set_facecolor('black')
     plt.tight_layout()
-    plt.savefig('./images/ownocc_waffle.jpg', dpi=300)
+    plt.savefig('./Pictures/ownerocc_waffle.jpg', dpi=300)
     plt.close()
 
 
@@ -603,13 +755,23 @@ def ownership():
     ax.set_yticklabels(df_own.own.tolist())
     ax.set_xlabel('Number of Properties')
     plt.tight_layout()
-    plt.savefig('./images/top_owners.jpg', dpi=300)
+    plt.savefig('./Pictures/top_owners.jpg', dpi=300)
     plt.close()
 
 
-def make_property_table(schema="public", table="sca_parcels"):
-    #creates temporary table of parcels that are within neighborhood
-    
+def make_property_table(nbhood, schema="public", table="sca_parcels"):
+    """
+    creates PostgreSQL temporary table of parcels that are within neighborhood
+
+    Args:
+        nbhood (str): String representing name of the neighborhhood as it exists
+            in the `geography.boundary` table in the blight_data database
+        schema (str, optional): PostgreSQL schema where the parcel data are stored default
+            value is the public schema
+        table (str, optional): name of the parcel file to be used to generate the temp
+            table. Default value is `sca_parcels`
+    """
+
     if table == "sca_parcels":
         pardat = "sca_pardat"
     else:
@@ -682,7 +844,7 @@ def property_conditions():
     ax.set_ylabel("Number of Requests")
     ax.set_xlabel("Year")
     plt.tight_layout()
-    plt.savefig('./images/code_viols_all.jpg', dpi=300)
+    plt.savefig('./Pictures/code_viols_all.jpg', dpi=300)
     plt.close()
 
     #------------------------------------------------------------------------
@@ -703,7 +865,7 @@ def property_conditions():
     plt.title("Total Requests {0} to {1}".format(df_code_grp.year.min(),
                                                  df_code_grp.year.max()))
     plt.tight_layout()
-    plt.savefig('./images/code_req_heatmap.jpg', dpi=300, bbox_inches="tight")
+    plt.savefig('./Pictures/code_req_heatmap.jpg', dpi=300, bbox_inches="tight")
     plt.close()
 
     #------------------------------------------------------------------------
@@ -725,7 +887,7 @@ def property_conditions():
     plt.xlabel('Number of Code Requests')
     plt.title('Common Code Requests by Type')
     plt.tight_layout()
-    plt.savefig('./images/req_by_type.jpg', dpi=300)
+    plt.savefig('./Pictures/req_by_type.jpg', dpi=300)
     plt.close()
     
     total_parcels = engine_blight.execute(("select count(parcelid) "
@@ -755,34 +917,127 @@ def property_conditions():
         result = engine_blight.execute(q_vals.format(**t)).fetchone()[0]
         results[t["table"]] = result/float(total_parcels)
 
-def financial():
+def financial_profile():
     """
     TODO:
-        - Median residential sale value for past year
-        - Percent change in appraisal since 2000
-        - Percent of properties with delinquent taxes
         - Total number of mortgage originations for past year
-        - Median rent
-        - Percent of parcels that are tax sale eligible
     """
+    tax_yr = engine_blight.execute("select taxyr from sca_pardat limit 1").fetchone()[0]
     if not property_table_exists():
         make_property_table()
     df_props = pd.read_sql("select * from nbhood_props", engine_blight)
-    q_appr = ("select parcelid, apr17, apr01 "
+
+    #--------------------------Percent change in appraised value-------------------------
+    q_appr = ("select parcelid, apr_cur, apr01 "
               "from nbhood_props, "
-              "(select a17.parid, a01.rtotapr apr01, a17.rtotapr apr17 "
-                "from sca_asmt a17, geography.sca_asmt_2001 a01 "
-                "where a17.parid = a01.parid) a "
+              "(select asmt.parid, a01.rtotapr apr01, asmt.rtotapr apr_cur "
+                "from sca_asmt asmt, geography.sca_asmt_2001 a01 "
+                "where asmt.parid = a01.parid) a "
               "where parcelid = parid")
     df_appr = pd.read_sql(q_appr, engine_blight)
-    df_appr["apr01_adj"] = utils.inflate("2001", "2017", df_appr.apr01)
+    df_appr["apr01_adj"] = utils.inflate(2001, tax_yr, df_appr.apr01)
     pct_chg = lambda y1, y2: (y2-y1)/y1*100
-    df_appr["pct_chg"] = pct_chg(df_appr.apr01_adj, df_appr.apr17)
+    df_appr["pct_chg"] = pct_chg(df_appr.apr01_adj, df_appr.apr_cur)
+    df_appr.to_sql("appraisal_change", engine_blight, schema="reports", if_exists="replace")
+    #Total percent change in apprasied value all properties
+    tot_chg = round((df_appr.apr_cur.sum()-df_appr.apr01_adj.sum())/
+                        df_appr.apr01_adj.sum()*100, 2)
+
+    #-----------------------------Average gross rent------------------------------------
+    fileid = ACS_SCHEMA.split("_")[-1] 
+    q_rent = ("select rent.geoid, b25003003 renter, b25065001 agg_rent "
+              "from {0}.b25003 tenure, {0}.b25065 rent "
+              "where tenure.geoid = rent.geoid "
+              "and rent.geoid in ('{1}') "
+              "and rent.fileid = '{2}e5' "
+              "and tenure.fileid = '{2}e5'")
+    df_rent = pd.read_sql(q_rent.format(*[ACS_SCHEMA, 
+                                          "','".join([g for g in t]), 
+                                          fileid]), engine_census)
+    avg_rent = round(df_rent.agg_rent.sum()/df_rent.renter.sum(), 2)
+
+    #------------------------Median Residential sale value------------------------------
+    #The PostgreSQL median function needs to be created if it doesn't already exist
+    #the code can be found at https://wiki.postgresql.org/wiki/Aggregate_Median 
+    q_sales = ("select median(price) "
+               "from "
+               "(select s.parid, case when numpars > 1 then price/numpars "
+		    "else price "
+                    "end as price "
+      		  "from sca_sales s, sca_pardat p "
+		  "where s.parid = p.parid "
+                    "and class = 'R' and price > 0 and instrtyp = 'WD' "
+		    "and date_part('year', saledt::date) >= {0}) p {1}")
+    #date range limited to sales over past year
+    dt_val = str(tax_yr - 1)
+    #limit selection to parcels in neighborhood parcels
+    sales_nbhood = (engine_blight.execute(q_sales
+                                 .format(dt_val, ", nbhood_props where parcelid = parid"))
+                                 .fetchone()[0])
+    #limit selection to city parcels
+    sales_city = (engine_blight.execute(q_sales
+                                 .format(dt_val, "where substring(parid, 1,1) = '0'"))
+                                 .fetchone()[0])
+    #median for all parcels in county
+    sales_county = (engine_blight.execute(q_sales
+                                 .format(dt_val, ""))
+                                 .fetchone()[0])
+
+    #-----------------------------------Tax Sale-----------------------------------------
+    q_tax = ("select parcelid, sum(sumdue) due, sum(sumrecv) recv, status "
+             "from nbhood_props n, sc_trustee t "
+             "where n.parcelid = parid "
+             "and load_date = (select max(load_date) from sc_trustee) "
+             "group by parcelid, status "
+             "order by parcelid")
+    df_tax = pd.read_sql(q_tax, engine_blight)
+    ct_elig = df_tax[df_tax.status == "Eligible"].shape[0]
+    ct_total = df_props.shape[0]
+    pct_elig = int(round(ct_elig/float(ct_total)*100))
+    ct_active = df_tax[df_tax.status == "Active"].shape[0]
+    pct_active = int(round(ct_active/float(ct_total)*100))
+    df_tax.to_sql("tax_sale", engine_blight, schema="reports", if_exists="replace")
+ 
+def run_neighborhood_report(nbhood_name):
+    """
+    Main method for generating neighborhood report. This method works with the following
+    methods to generate the content for each of the five pages that comprise a complete
+    neighborhood report:
+        + property_conditions
+        + ownership_profile
+        + neighborhood_profile
+        + financial_profile
+    Args:
+        nbhood_name (str): String corresponding to the name of the neighborhood boundary
+            as it exists in `geography.boundary` in the blight_data database
+    
+    Returns:
+        None
+    """
+    os.chdir("./neighborhood")
+    dir_name = nbhood_name.replace(" ", "")
+    if not os.path.exists(dir_name):
+        os.mkdir(dir_name)
+    shutil.copyfile("report_template.odt", "./"+dir_name+"/"+dir_name+"_report.odt")
+    shutil.copytree("Pictures", "./"+dir_name+"/Pictures")
+    os.chdir(dir_name)
+    make_property_table(nbhood_name)
+
+
+
+
+
+
+    
+
+
 
     
 def main(args):
     if args["neighborhood"]:
-        pass
+        global NEIGHBORHOOD = args["<neighborhood_name>"]
+        run_neighborhood_report(NEIGHBORHOOD)
+        print args        
     elif args["violator"]:
         #print args
         run_violator_report(args["<month>"], 
