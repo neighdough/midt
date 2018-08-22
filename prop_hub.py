@@ -4,11 +4,13 @@
 Methods for maintaining and updating the Memphis Property Hub
 
 Usage:
-    prop_hub (code_enforcement <path> | mlgw <file_name> | land_bank | 
-             register [--startdate --enddate <instype> ...])
+    prop_hub (code_enforcement <path> | mlgw <file_name> <path_name> | land_bank | 
+              register [--startdate=<YYYYmmdd> --enddate=<YYYYmmdd> <instype> ...] | 
+              assessor [--load <year> [--skip <columns>...]| --update])
 
 Options:
-    update_com_tables: load Code enforcement request data
+
+    code_enforcement: load Code enforcement request data
         <path>: full path of where new data resides
 
     mlgw: load new MLGW disonnection data
@@ -19,15 +21,20 @@ Options:
     
     register: scrape data from Shelby County Register's database and load
         into property hub database.
-        startdate: start date in format YYYYmmdd
-        enddate: end date of request in format YYYYmmdd
-        instype (optional): type of instrument to be pulled, default is "ALL"
+        -s --startdate <YYYYmmdd>: start date in format YYYYmmdd
+        -e --enddate <YYYYmmdd>: end date of request in format YYYYmmdd
+        <instype> (optional): type of instrument to be pulled, default is "ALL"
             other possible entries include:
                 'WD', 'QC', 'MTG', 'PAR', 'ASRL', 'REL', 'MISC', 'MOD', 'ASGN',
                 'CRTD', 'STR', 'AFFH', 'LIEN', 'LEAS', 'POA', 'RFS', 'APPT', 'COF',
                 'NOC', 'SUBA', 'CONTR', 'RFSC', 'ESMT', 'RFSAS', 'AMD', 'TXPRL',
                 'SRES', 'RFST', 'RFSP', 'ASMP', 'RFSAM', 'None'
 
+    assessor: Load new assessor data intot blight_data database or update combined_table
+        with new assessor data.
+        --load <year>: replace existing assessor tables with new data for specified year
+        --skip <columns>: list of tables to skip
+        --update: update combined table with previously loaded assessor data
 
 
 """
@@ -42,14 +49,17 @@ from collections import OrderedDict
 from datetime import datetime, date
 import getopt
 import json
-from sqlalchemy import create_engine, MetaData, Table, Column, Sequence, text
+from sqlalchemy import (create_engine, MetaData, Table, Column, 
+                        Sequence, text, exc)
 from sqlalchemy.types import (BIGINT, TEXT, DATE, FLOAT) 
+import geoalchemy2
 from geoalchemy2 import Geometry
 import numpy as np
 import pandas as pd
 import re
 import requests
 from shapely.geometry import Point
+from subprocess import call
 import sys
 from caeser import utils
 from config import cnx_params
@@ -57,14 +67,16 @@ import os
 import subprocess
 import StringIO
 from docopt import docopt
-
+import warnings
+warnings.filterwarnings("ignore")
+warnings.simplefilter("ignore", category=exc.SAWarning)
 
 engine = utils.connect(**cnx_params.blight)
 conn = engine.connect()
 meta = MetaData(schema='public')
 meta.reflect(bind=engine)
 
-def update_register(startdate, enddate='', instype = 'ALL'):
+def update_register(startdate, enddate='', instype=None):
     """This function performs the bulk of the work in extracting recent sales
     from the Shelby County Register's Recent and Comparable search page. While
     their search allows users to extract a variety of information, this function
@@ -75,10 +87,10 @@ def update_register(startdate, enddate='', instype = 'ALL'):
 
     Args:
         startdate (string): date string in format YYYYmmdd
-        enddate (Optional[string]): date string in format YYYYmmdd
-        instype (Optional[string]): Register instrument code for type of
-            instruments to be returned. Default value is 'ALL' acceptable
-            values include:
+        enddate (string, optional): date string in format YYYYmmdd
+        instype (list of strings, optional): Register instrument code for type of
+            instruments to be returned with a maximum of 3 values. Default value 
+            is 'ALL' acceptable values include:
                 'WD', 'QC', 'MTG', 'PAR', 'ASRL', 'REL', 'MISC', 'MOD', 'ASGN',
                 'CRTD', 'STR', 'AFFH', 'LIEN', 'LEAS', 'POA', 'RFS', 'APPT', 'COF',
                 'NOC', 'SUBA', 'CONTR', 'RFSC', 'ESMT', 'RFSAS', 'AMD', 'TXPRL',
@@ -88,11 +100,27 @@ def update_register(startdate, enddate='', instype = 'ALL'):
     """
     payload = {'startDate': startdate,
                'endDate': enddate,
-               'itype2': instype,
                'searchtype': 'ADDR',
                'search.x': '28',
                'search.y': '3',
                'search': 'execute search'}
+
+    if instype:
+        if len(instype) > 3:
+            print(("You have provided more than 3 instrument types. Please limit your "
+                    "query to 3 or less, or delete this parameter to execute a query "
+                    "for all instrument types."))
+            return 
+        
+        for i in range(len(instype)):
+            #REST parameters for instrument type is itype2, itype3, itype4 so you need
+            #to iterate over the list (if it exists) and add an instrument type key
+            #for each value provided with a maximum of 3
+            k = "itype" + str(i + 2)
+            payload[k] = instype[i]
+    else:
+        payload["itype2"] = "ALL"
+    
     session = requests.Session()
 
     req = requests.post('http://register.shelby.tn.us/p2.php', data=payload)
@@ -151,28 +179,28 @@ def update_register(startdate, enddate='', instype = 'ALL'):
     update_metadata(False, "caeser_register")
     #return tbl_df
 
-def main(argv):
-    """Main method for scraping website set up to run via command line. Command
-    should be run in format:
+# def main(argv):
+    # """Main method for scraping website set up to run via command line. Command
+    # should be run in format:
 
-   $python register.py -s <Start Date> -e <End Date (optional)> -t <Instrument type (optional)>
+   # $python register.py -s <Start Date> -e <End Date (optional)> -t <Instrument type (optional)>
 
-    """
-    start = ''
-    end = ''
-    type = ''
-    opts, args = getopt.getopt(argv, 'h:s:t:', ['startdate=', 'enddate=',
-                                              'instype='])
-    for opt, arg in opts:
-        if opt == '-h':
-            print 'register.py -s <start> -e <end> -t <type>'
-            sys.exit()
-        elif opt in ('-s', '--startdate'):
-            start = arg
-        elif opt in ('-e', '--enddate'):
-            end = arg
-        elif opt in ('-t', '--instype'):
-            type = arg
+    # """
+    # start = ''
+    # end = ''
+    # type = ''
+    # opts, args = getopt.getopt(argv, 'h:s:t:', ['startdate=', 'enddate=',
+                                              # 'instype='])
+    # for opt, arg in opts:
+        # if opt == '-h':
+            # print 'register.py -s <start> -e <end> -t <type>'
+            # sys.exit()
+        # elif opt in ('-s', '--startdate'):
+            # start = arg
+        # elif opt in ('-e', '--enddate'):
+            # end = arg
+        # elif opt in ('-t', '--instype'):
+            # type = arg
     
 
 def get(layer, fields=None, where="1=1", service=None):
@@ -473,22 +501,18 @@ def com_tax(date):
     df_tax = pd.read_csv('tax_delinquent_'+date, header=0, names=tax_cols.keys(),
 	    dtype=tax_cols)
 
-#    df_tax = pd.read_csv('tax_delinquent_'+date)    
     df_tax['tax_type'].replace(tax_codes, inplace=True)
     df_tax['load_date'] = datetime.date.today()
-    #TODO adjust yr field to show year only 
-#    df_tax['yr'] = pd.to_datetime(df_tax['yr'], format='%Y').values.\
-#                    astype('datetime64[Y]')
     df_tax.to_sql('com_tax', engine, if_exists='append')
     update_metadata(False, "com_tax")
 
     #remove current city tax information
-    clean_tax = """update combined_table \
-                    set yr = NULL,
-                        net_due = NULL,
-                        late_fees = NULL,
-                        load_date = current_date
-                    where yr is not NULL;"""
+    clean_tax = ("update combined_table "
+                    "set yr = NULL,"
+                      "net_due = NULL,"
+                      "late_fees = NULL,"
+                      "load_date = current_date "
+                    "where yr is not NULL;")
     conn.execute(clean_tax)
     #update new tax information
     update_tax = ("update combined_table "
@@ -502,6 +526,7 @@ def com_tax(date):
                 "group by parcelid) tax "
             "where parid = parcelid")
     conn.execute(update_tax)
+    update_metadata(False, "com_tax")
 
 def build_sc_trustee(accdb):
     """Loads updated tax delinquency data from Shelby County Trustee into 
@@ -705,7 +730,7 @@ def update_com_tables(file_path):
                 ))                                                    
             update_metadata(False, "combined_table")
 
-def mlgw(path, table_name):
+def mlgw(table_name):
     """
     updates columns mtrtyp, ecut, and gcut in combined_table using most
     recent dump provided by MLGW
@@ -716,7 +741,6 @@ def mlgw(path, table_name):
     Returns:
 	None
     """
-    os.chdir('/home/nate/dropbox-caeser/Data/MIDT/Data_Warehouse/mlgw')
     mlgw_cols = OrderedDict([('mtrtyp', np.str),
 			     ('address', np.str),
 			     ('ecut', np.str),
@@ -760,7 +784,7 @@ def mlgw(path, table_name):
                 "where combined_table.parid = upd.parid")
     conn.execute(sql_update)
 
-def assessor():
+def update_assessor():
     """Updates combined_table with new Assessor data. It assumes that all 
     Assessor tables (sca_*) have been updated with new data.
     """
@@ -842,7 +866,7 @@ def assessor():
     engine.execute("alter table combined_table drop column geom")
 
 
-def load_assessor(year):
+def load_assessor(year, skip=[]):
     """
     Replaces all assessor tables (sca_*) in the blight_data database with 
     new assessor data, using the year to switch directories
@@ -857,15 +881,45 @@ def load_assessor(year):
     tables = ([t.split('.')[-1] for t in meta.tables.keys() 
                     if "sca" in t.split(".")[-1]
                     and t.split(".")[-1] != "sca_parcels"])
-    for table in tables:
-        print "\t\t",table
+    print("Updating all Assessor Tables:")
+    drop_table = ("drop table if exists {} cascade")
+    for table in [table for table in tables if table not in skip]:
+        print("\t\t " + table)
         df_cur = pd.read_sql("select * from {} limit 1".format(table), engine)
         fn = table.split("_")[-1].upper() + ".txt"
         df = pd.read_csv(fn, 
                          header=0, 
                          names=[col for col in df_cur.columns if col != "id"],
-                         dtype={k:v for k, v in df_cur.dtypes.iteritems()})
+                         dtype={k:v for k, v in df_cur.dtypes.iteritems()},
+                         encoding="cp1252")
+        engine.execute(drop_table.format(table))
         df.to_sql(table, engine, if_exists="replace", index=False)
+
+        if table != "sca_aedit":
+            engine.execute("create index idx_parid_{0} on {0}(parid) ".format(table))
+    
+    #Update Parcel data
+    print("\nUpdating Parcel data, may take a few minutes")
+    if "Parcels{}.shp".format(year) not in os.listdir("."):
+        msg = ("\n\nEnter the name of the parcel shapefile without any extension: ")
+        parcels = raw_input(msg)
+    else:
+        parcels = "Parcels{}.shp".format(year)
+
+    q_drop = "drop table sca_parcels cascade"
+    engine.execute(q_drop)
+    shp2pgsql = ["shp2pgsql", "-I", "-s 2274", parcels, "public.sca_parcels"]
+    psql = ["psql -U {user} -d {db} -h {host} -p 5432".format(**cnx_params.blight)]
+    process_shp2pgsql = subprocess.Popen(shp2pgsql, stdout=subprocess.PIPE)
+    process_psql = subprocess.Popen(psql, stdin=process_shp2pgsql.stdout,
+                                    env={"PGPASSWORD": cnx_params.blight["password"]},
+                                    shell=True)
+    process_shp2pgsql.stdout.close()
+    process_psql.communicate()[0]
+    q_index = "create index idx_parcelid_sca_parcels on sca_parcels(parcelid);"
+    engine.execute(q_index)
+    q_alter = "alter table sca_parcels rename geom to wkb_geometry"
+    engine.execute(q_alter)
 
 def update_metadata(update_all=True, update_table=""):
     
@@ -890,15 +944,15 @@ def update_metadata(update_all=True, update_table=""):
                     "set last_update = to_date('{0}', 'YYYY-MM-DD') "
                     "where tbl_name = '{1}'")
         to_date = date.today().strftime("%Y-%m-%d")
-        engine.execute(q_update.format(to_date, update_table)
+        engine.execute(q_update.format(to_date, update_table))
     else:
         q_update = ("update info.tbls "
                     "set first_yr = {0}, "
                         "last_yr = {1}, "
                         "last_update = to_date('{2}', 'YYYY-MM-DD') "
                     "where tbl_name = '{3}'")
-       for tbl in md_tables:
-            print tbl
+        for tbl in md_tables:
+            print(tbl)
             try:
                 last_update = (engine.execute(
                                 q_time.format("max","load_date", tbl))
@@ -922,15 +976,37 @@ def main(args):
         path = args["<path>"]
         try:
             os.chdir(path)
-            update_com_tables(args["path"])
+            update_com_tables(path)
         except:
-            print "Path not recognized. Check location and try again."
+            print("Path not recognized. Check location and try again.")
+    if args["land_bank"]:
+        land_bank() 
+    if args["register"]:
+        params = {}
+        if args["--startdate"]:
+            params["startdate"] = args["--startdate"]
+        if args["--enddate"]:
+            params["enddate"] = args["--enddate"]
+        if args["<instype>"]:
+            params["instype"] = args["<instype>"]
+    if args["mlgw"]:
+        if args["<path_name>"]:
+            try:
+                os.chdir(args["<path_name>"])
+            except:
+                print("Path not recognized. Check location and try again.")          
+        else:
+            os.chdir('/home/nate/dropbox-caeser/Data/MIDT/Data_Warehouse/mlgw')
+        mlgw(args["<file_name>"])
+    if args["assessor"]:
+        if args["--update"]:
+            update_assessor()
+        elif args["--load"]:
+            if args["--skip"]:
+                load_assessor(args["--load"], args["--skip"][0].split(","))
+            else:
+                load_assessor(args["--load"])
 
-        
-
-
-
-             
     
 if __name__ == '__main__':
     args = docopt(__doc__)
