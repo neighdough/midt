@@ -50,6 +50,7 @@ import calendar
 from config import cnx_params
 import datetime
 from docopt import docopt
+from lxml import etree
 from math import log
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -59,18 +60,22 @@ import os
 from qgis.core import (QgsProject, QgsComposition, QgsApplication, 
                        QgsProviderRegistry, QgsRectangle, QgsPalLayerSettings,
                        QgsComposerAttributeTableV2, QgsComposerMap, QgsComposerLegend,
-                       QgsComposerPicture, QgsComposerLabel)
+                       QgsComposerPicture, QgsComposerLabel, QgsComposerFrame)
 from qgis.gui import QgsMapCanvas, QgsLayerTreeMapCanvasBridge
 from PyQt4.QtCore import QFileInfo, QSize
 from PyQt4.QtXml import QDomDocument
 from PyQt4.QtGui import QImage, QPainter
 from scipy.interpolate import spline
 import seaborn as sns
+import shutil
 from sqlalchemy import text
 import sys
 sys.path.append('/home/nate/source')
 from titlecase import titlecase
-import shutil
+import zipfile
+import warnings
+
+warnings.filterwarnings("ignore")
 
 
 engine_blight = utils.connect(**cnx_params.blight)
@@ -81,6 +86,65 @@ os.chdir("/home/nate/dropbox-caeser/Data/MIDT/Data_Warehouse/reports")
 cur_year = datetime.datetime.today().year
 ACS_SCHEMA = "acs5yr_2015"
 FILEID = ACS_SCHEMA.split("_")[-1]+"e5"
+
+class Report:
+    """
+    Class used to handle the report creation and modification
+    """
+
+    def __init__(self, nbhood_name, z_in, z_out, *args, **kwargs):
+        """
+        Parameters:
+            nbhood_name (str): Name of the neighborhood that report is being generated
+                for.
+            z_in (str): Name of the template being used.
+            z_out (str): Name of the odt document that will be created upon report
+                completion
+        """
+        self.nbhood = nbhood_name
+        self.z_in = zipfile.ZipFile(z_in)
+        self.zip_out = zipfile.ZipFile(z_out, "w")
+        self.xml_content = self.zip_in.read("content.xml")
+        self.xml_manifest = self.zip_in.read("META-INF/manifest.xml")
+        self.root_content = etree.fromstring(self.xml_content)
+        seslf.root_mainifest = etree.fromstring(self.xml_manifest)
+        
+        #All required namespace prefixes needed to locate xml tags in odt
+	self.ns = {"draw": "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0",
+		   "office": "urn:oasis:names:tc:opendocument:xmlns:office:1.0",
+		   "style": "urn:oasis:names:tc:opendocument:xmlns:style:1.0",
+		   "table": "urn:oasis:names:tc:opendocument:xmlns:table:1.0",
+		   "text": "urn:oasis:names:tc:opendocument:xmlns:text:1.0",
+		   "manifest": "urn:oasis:names:tc:opendocument:xmlns:manifest:1.0",
+		   "xlink": "http://www.w3.org/1999/xlink",
+		   "re:": "http://exslt.org/regular-expressions"
+		  }
+        
+    def create_titles(self):
+        """
+        """
+        pass
+    
+    def save_report(self):
+        """
+        Finalize report and save to disk
+        """
+        pass
+
+    def insert_image(self, image_name):
+        """
+        use image name to update 
+        """
+        pass
+
+    def update_table(self, table_name, *args):
+        """
+        update values in table
+        """
+        pass
+
+        
+
 
 class QgisMap:
     """
@@ -105,6 +169,7 @@ class QgisMap:
         self.project_name = project_name
         self.template_name = template_name
         self.canvas = QgsMapCanvas()
+        self.scale = self.canvas.scale()
         self.project = QgsProject.instance()
         self.project.read(QFileInfo(project_name))
         self.bridge = QgsLayerTreeMapCanvasBridge(
@@ -117,22 +182,73 @@ class QgisMap:
         self.document.setContent(self.template_content)
         self.composition = QgsComposition(self.canvas.mapSettings())
         self.composition.loadFromTemplate(self.document)
-
+        self.rectangle = self.canvas.extent()
         self.element_methods = {QgsComposerAttributeTableV2:
-                                    {"refreshAttributes":[]},
+                                    {"refreshAttributes": args},
                                 QgsComposerMap: 
-                                    {"setMapCanvas": [self.canvas], 
-                                     "zoomToExtent": ["rectangle"]},
+                                    {"setMapCanvas": args, 
+                                     "zoomToExtent": args,
+                                     "setNewScale": args},
                                 QgsComposerLegend: 
-                                    {"updateLegend": []},
+                                    {"updateLegend": args},
                                 QgsComposerPicture: 
-                                    {"setPicturePath": ["image_path"], 
-                                     "refreshPicture":[]},
+                                    {"setPicturePath": kwargs, 
+                                     "refreshPicture": args},
                                 QgsComposerLabel: 
-                                    {"setText": ["input_text"]}
+                                    {"setText": args}
                                 }
 
-    
+
+    def get_element_methods(self):
+        return self.element_methods
+
+    def add_element(self, item_id, *args, **kwargs):
+        """
+        Add elements to the map composer to be displayed on the exported image.
+
+        Args:
+            item_id (str): Item id for the composer element as listed in the print
+                composer in QGIS.
+
+        Keyword Args:
+            image_path (str): Full path including extension to image to be used with the
+                setPicturePath method
+
+        Returns:
+            None
+        """
+        composer_item = self.composition.getComposerItemById(item_id)
+        if type(composer_item) == QgsComposerFrame:
+            composer_item = composer_item.multiFrame()
+        for method, params in self.element_methods[type(composer_item)].iteritems():
+            if kwargs:
+                if method in kwargs.keys():
+                    getattr(composer_item, method)(kwargs[method])
+                else:
+                    getattr(composer_item, method)()
+            if args:
+                getattr(composer_item, method)(*args)
+        self.composition.refreshItems()
+        self.canvas.refresh()
+
+
+    def update_scale(self, scale):
+        self.scale = scale
+
+    def update_extent(self, rectangle):
+        """
+        Set new extent for canvas.
+
+        Args:
+            rectangle (tuple, float): coordinates for new extent rectangle in format 
+                (xmin, ymin, xmax, ymax)
+
+        Returns:
+            None
+                
+        """
+        self.rectangle = QgsRectangle(*rectangle)
+
     def update_layers(self):
         pass
 
@@ -152,36 +268,6 @@ class QgisMap:
         lbl.readFromLayer(lyr)
         lbl.enabled = True
         lbl.fieldName = field_name
-        self.canvas.refresh()
-
-    def add_element(self, item_id, *args, **kwargs):
-        """
-        Add elements to the map composer to be displayed on the exported image.
-
-        Args:
-            item_id (str): Item id for the composer element as listed in the print
-                composer in QGIS.
-
-        Keyword Args:
-            image_path (str): Full path including extension to image to be used with the
-                setPicturePath method
-
-        Returns:
-            None
-        """
-        composer_item = self.composition.getComposerItemById(item_id)
-        if type(composer_item) == QgsComposerAttributeTableV2:
-            composer_item = composer_item.multiFrame()
-        for method, params in self.element_methods[type(composer_item)].iteritems():
-            print method, params
-            getattr(composer_item, method)(*params)
-            # if "image_path" in kwargs and method == "setPicturePath":
-                # getattr(composer_item, method)(kwargs.get("image_path"))
-            # elif type(composer_item) == QgsComposerMap:
-                # getattr(composer_item, method)(self.canvas)
-            # else:        
-                # getattr(composer_item, method)()
-        self.composition.refreshItems()
         self.canvas.refresh()
 
 
@@ -224,7 +310,8 @@ def run_violator_report(period, yr=None):
     
     Args:
         period (int): Numeric value of the month for the report (i.e. 5 = May,
-        6 = June, etc.)
+                      6 = June, etc.). Can either be a single month to run a one-month
+                      report, or 2 values specifying the start and end months for a range.
         yr (int, optional): Year for the report
     Returns:
         None
@@ -242,8 +329,18 @@ def run_violator_report(period, yr=None):
         return 
     start_date = format_date(start, year)[:-2] + "01"
     end_date = format_date(finish, year)
-    print "Start: ", start_date, "\nEnd: ", end_date
+    
+    date_label = "{0} {1} to {2} {3}, {4}".format(
+                                            calendar.month_name[int(start)],
+                                            "1",
+                                            calendar.month_name[int(finish)],
+                                            end_date.split("-")[2],
+                                            end_date.split("-")[0]
+                                            )
 
+    #List of owner names in sca_owndat that should be excluded from the analysis. Names
+    #are typically added based on the recommendation of various members from the Blight
+    #Elimination Steering Team (BEST)
     ignore = ["city of memphis", "shelby county tax sale", 
               "health educational and housing"]
 
@@ -272,7 +369,7 @@ def run_violator_report(period, yr=None):
     #to fail unless wrapped in sqlalchemy.text
 
     def acronyms(word, **kwargs):
-        if word in ["CSMA", "LLC", "(RS)", "RS", "FBO", "II"]:
+        if word in ["CSMA", "LLC", "(RS)", "RS", "FBO", "II", "LP"]:
             return word.upper()
 
     vals = {"start_date": start_date, 
@@ -289,8 +386,8 @@ def run_violator_report(period, yr=None):
     own_group['rank'] = own_group.index + 1
     own_group.rename(columns={"parcelid":"count"}, inplace=True)
     own_group = own_group[["own", "count", "rank"]]
-    make_map(df[df.own.isin(own_group.own.tolist())],
-            own_group)
+    owner_violator_map(df[df.own.isin(own_group.own.tolist())],
+            own_group, date_label)
     own_violations = (df[df.own.isin(own_group.own.tolist())]
                         .groupby(['own', 'request_type'])['request_type']
                         .count()
@@ -304,7 +401,6 @@ def run_violator_report(period, yr=None):
                                             colormap='BrBG')
     ax.set_xlabel('Owner Name')
     ax.set_ylabel('Number of Violations')
-#    plt.figure(figsize=(10, 8),dpi=300, facecolor='white')
     labels = ax.get_xticklabels()
     
     plt.setp(labels, rotation=90, fontsize=8)
@@ -313,29 +409,47 @@ def run_violator_report(period, yr=None):
     fig_name = 'owner_bar_stacked_{}.jpg'.format(end_date)
     plt.savefig(fig_name, dpi=300)
 
-def make_map(dframe, group):
+def owner_violator_map(dframe, group, date_label):
     """
-    dframe=own_props.copy()
+    Formats and exports a map for property code violation owner report using an existing
+    template in the monthly_code_violators report director in dropbox-caeser
+
+    Args:
+        dframe (Pandas DataFrame): full dataframe generated from a sql selection of all
+            properties with property code violations for specified time range
+        group (Pandas DataFrame): DataFrame containing unique names and number of violations
+            for top 10 code violations.
+        date_label (str): Formatted string containing date range for report. String is to
+            be used as the map label for generating report
+
+    Returns:
+        None
     """
     addr_count = dframe.groupby('par_adr', as_index=False).size()
     dframe.drop_duplicates('par_adr', inplace=True)
     dframe = dframe.join(addr_count.to_frame(), on='par_adr')
     dframe.rename(columns={0:'num_vi'}, inplace=True)
-#    dframe = dframe.reset_index()
-#    dframe = dframe.join(owner_rank, on='own', rsuffix='_rank')
     dframe = dframe.merge(group, on='own')
     dframe.index += 1
-#    dframe.to_csv('owner_coords.csv', index_label='id', encoding='utf-8')
-    dframe.to_sql("owner_coords", blight_engine, 
+    dframe.to_sql("owner_coords", engine_blight, 
                     schema="reports", if_exists="replace", index_label="id")
     
-    nhood_map = QGIS_Map("map.qgs", "map_template.qgt")
-    logo_path = ("/home/nate/dropbox-caeser/CAESER/Logos"
-                             "/UofM_horiz_cmyk_CAESER.png")
-    nhood_map.add_element("logo", image_path=logo_path)
+    nhood_map = QgisMap("map.qgs", "map_template.qpt")
+    logo_path = ("/home/nate/dropbox-caeser/CAESER"
+                 "/logos_letterhead_brand_standards/logos/UofM_horiz_cmyk_CAESER.png")
+    nhood_map.add_element("logo", setPicturePath=logo_path)
+    nhood_map.update_extent((677676.557, 249522.171, 864816.297, 381843.199))
+    nhood_map.update_scale(192055)
     nhood_map.add_element("map")
     nhood_map.add_element("legend")
     nhood_map.add_element("table")
+    nhood_map.add_label(0, "rank")
+
+    nhood_map.add_element("date_range", date_label)
+
+    map_title = "owner_violator_" + date_label.replace(" ", "_").replace(",", "")
+    nhood_map.save_map(map_title)
+    
 
 def format_date(month, year):
     """
@@ -343,6 +457,7 @@ def format_date(month, year):
     
     Args:
         month (str):
+        year (int): 
     Returns:
         String containing formatted date strings in the form 'YYYY-MM-dd' to be
             passed into SQL query to specify date range for the report.
@@ -663,6 +778,7 @@ def calculate_median(incomedata):
 
 def ownership_profile():
     """
+    Generates maps and charts for Ownership Profile page of neighborhood report
     """
 
     #selects distinct owner names for ownership in neighborhood
@@ -804,7 +920,7 @@ def property_conditions():
     """
     """
     if not property_table_exists():
-        make_property_table()
+        make_property_table(NEIGHBORHOOD)
     df_props = pd.read_sql("select * from nbhood_props", engine_blight)
     #selects all of the code enforcement violations over time
     q_code = ("select * from "
@@ -924,7 +1040,7 @@ def financial_profile():
     """
     tax_yr = engine_blight.execute("select taxyr from sca_pardat limit 1").fetchone()[0]
     if not property_table_exists():
-        make_property_table()
+        make_property_table(NEIGHBORHOOD)
     df_props = pd.read_sql("select * from nbhood_props", engine_blight)
 
     #--------------------------Percent change in appraised value-------------------------
@@ -997,7 +1113,7 @@ def financial_profile():
     ct_active = df_tax[df_tax.status == "Active"].shape[0]
     pct_active = int(round(ct_active/float(ct_total)*100))
     df_tax.to_sql("tax_sale", engine_blight, schema="reports", if_exists="replace")
- 
+
 def run_neighborhood_report(nbhood_name):
     """
     Main method for generating neighborhood report. This method works with the following
@@ -1016,30 +1132,25 @@ def run_neighborhood_report(nbhood_name):
     """
     os.chdir("./neighborhood")
     dir_name = nbhood_name.replace(" ", "")
+    report_name = dir_name + "_report.odt"
     if not os.path.exists(dir_name):
         os.mkdir(dir_name)
-    shutil.copyfile("report_template.odt", "./"+dir_name+"/"+dir_name+"_report.odt")
     shutil.copytree("Pictures", "./"+dir_name+"/Pictures")
+    shutil.copytree("maps", "./"+dir_name+"/maps")
     os.chdir(dir_name)
+    for f in os.listdir("./maps"):
+        #name&quot; =
+        #name =
+        #sql="name" =
     make_property_table(nbhood_name)
-
-
-
-
-
-
-    
-
 
 
     
 def main(args):
     if args["neighborhood"]:
-        global NEIGHBORHOOD = args["<neighborhood_name>"]
+        NEIGHBORHOOD = args["<neighborhood_name>"]
         run_neighborhood_report(NEIGHBORHOOD)
-        print args        
     elif args["violator"]:
-        #print args
         run_violator_report(args["<month>"], 
                             args["--year"]
                            )
