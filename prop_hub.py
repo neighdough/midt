@@ -6,7 +6,7 @@ Methods for maintaining and updating the Memphis Property Hub
 Usage:
     prop_hub (code_enforcement <path> | mlgw <file_name> <path_name> | land_bank | 
               register [--startdate=<YYYYmmdd> --enddate=<YYYYmmdd> <instype> ...] | 
-              assessor [--load <year> [--skip <columns>...]| --update])
+              assessor [--load <year> [--skip <columns>...]| --update] | com_tax <date>)
 
 Options:
 
@@ -35,6 +35,9 @@ Options:
         --load <year>: replace existing assessor tables with new data for specified year
         --skip <columns>: list of tables to skip
         --update: update combined table with previously loaded assessor data
+
+    com_tax: load new data for City of Memphis tax delinquency
+        <date>: date in mmddyyyy format
 
 
 """
@@ -328,6 +331,7 @@ def land_bank():
                         from caeser_landbank where load_date = current_date) lb
                     where combined_table.parid = lb.parid;"""
     conn.execute(update_lb)
+    update_metadata(False, "caeser_landbank")
 
 def permits():
     """
@@ -620,7 +624,6 @@ def update_com_tables(file_path):
         """
         import re
 
-#        tbl_name = 'com_servreq' if 'AUDIT' in f else 'com_incident'
         if 'HDR' in f:
             tbl_name = 'com_incident'
     	    divisions = ['Memphis Housing Authority', 'Engineering', 
@@ -639,7 +642,7 @@ def update_com_tables(file_path):
         else:
             tbl_name = 'com_servreq'
 
-        df = pd.read_csv(f, delimiter='|')
+        df = pd.read_csv(f, delimiter='|', quoting=3)
         df.rename(columns={col: col.lower() for col in df.columns}, 
                    inplace=True)
         if tbl_name == 'com_incident':
@@ -729,6 +732,7 @@ def update_com_tables(file_path):
                         "where q.parcel_id = parid"
                 ))                                                    
             update_metadata(False, "combined_table")
+    shutil.move(f, "../"+f)
 
 def mlgw(table_name):
     """
@@ -976,9 +980,10 @@ def main(args):
         path = args["<path>"]
         try:
             os.chdir(path)
-            update_com_tables(path)
         except:
             print("Path not recognized. Check location and try again.")
+            return
+        update_com_tables(path)
     if args["land_bank"]:
         land_bank() 
     if args["register"]:
@@ -1006,6 +1011,9 @@ def main(args):
                 load_assessor(args["--load"], args["--skip"][0].split(","))
             else:
                 load_assessor(args["--load"])
+    if args["com_tax"]:
+        com_tax(args["<date>"])
+
 
     
 if __name__ == '__main__':
