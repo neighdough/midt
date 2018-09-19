@@ -69,6 +69,7 @@ from config import cnx_params
 import os
 import subprocess
 import StringIO
+import shutil
 from docopt import docopt
 import warnings
 warnings.filterwarnings("ignore")
