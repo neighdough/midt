@@ -1,111 +1,36 @@
 """
-
-Methodology for Target-Density Weighting (TDW) Interpolation taken from:
-
-Target-Density Weighting Interpolation and Uncertainty Evaluation for Temporal
-Analysis of Census Data. Schroeder, Johnathan P., Geographical Analysis 39, 2007.
-
-https://onlinelibrary.wiley.com/doi/pdf/10.1111/j.1538-4632.2007.00706.x
-
 """
 
 import pandas as pd
+import numpy as np
 import os
 from caeser import utils
 from config import cnx_params
 import matplotlib.pyplot as plt
 from sklearn import linear_model
+from sklearn.model_selection import cross_val_predict
+from sklearn.metrics import mean_squared_error, r2_score
 
 engine_blight = utils.connect(**cnx_params.blight)
 engine_wwl = utils.connect(**cnx_params.wwl_2017)
 
-def tdw(ast, at, zst, zt, ys):
-    """
-        Sum(((Ast/At)*zt)/Sum((Ast/At)*zt)*Ys)
-        Ast:                sqmi, square miles for boundary intersection
-        At:                 sqmi_bound, total square miles for zip 
-        zt:                 sum_addr, total number of addresses within boundary
-        zst:                num_addr, number of addresses within intersection
-        Ys:                 num_meters, total number of meters within zip code
-        Sum((Ast/At)*zt)):  sqmi, sqmi_bound, sum_addr
-    """
-    return (((ast / at) * zst) / ((ast / at ) * zt)) * ys
-
-q_addr_all = ("with zip_select as ( "
-            "select case when zip = '38113' then '38106' "
-            "when zip = '38131' then '38116' "
-            "when zip = '38132' then '38116' "
-            "else zip end as zip "
-          "from geography.sc911_address) "
-         "select zip, count(zip) num from zip_select "
-         "group by zip order by zip"
-         )
-addr_all = pd.read_sql(q_addr_all, engine_blight)
-addr_all.zip = addr_all.zip.astype(str)
-
-# q_addr = ("with bz_intersection as ("
-            # "select b.name, geoid10 zip, st_area(b.wkb_geometry)/27878400 sqmi_bound,"
-                    # "st_intersection(b.wkb_geometry, z.wkb_geometry) geom "
-            # "from geography.boundaries b, geography.tiger_zcta_2010 z "
-                    # "where st_intersects(b.wkb_geometry, z.wkb_geometry) "
-            # "and b.name in('CBID', 'Parkways', 'The Core', 'Main Street Mall') "
-            # ")"
-            # "select bz_intersection.name, bz_intersection.zip, sqmi_bound, "
-                # "st_area(geom)/27878400 sqmi, "
-                # "sum_addr, num_addr from bz_intersection "
-            # "left join (select b.name, count(a.wkb_geometry) num_addr, b.zip "
-                      # "from geography.sc911_address a, bz_intersection b "
-                   # "where st_intersects(a.wkb_geometry, b.geom) "
-                   # "group by b.name, b.zip"
-                  # ") sc_addresses "
-            # "on sc_addresses.name = bz_intersection.name "
-            # "and sc_addresses.zip = bz_intersection.zip "
-            # "left join(select b.name, count(a.wkb_geometry) sum_addr "
-                      # "from geography.boundaries b, geography.sc911_address a "
-                      # "where st_intersects(a.wkb_geometry, b.wkb_geometry) "
-                       # "and b.name in ('CBID', 'Parkways', 'The Core', 'Main Street Mall') "
-                        # "group by b.name) addr_all "
-            # "on addr_all.name = bz_intersection.name"
-	 # )
-q_addr = ("with bz_intersection as ("
-            "select b.name, geoid10 zip, st_area(b.wkb_geometry)/27878400 sqmi_bound,"
-                    "st_intersection(b.wkb_geometry, z.wkb_geometry) geom "
-            "from geography.boundaries b, geography.tiger_zcta_2010 z "
-                    "where st_intersects(b.wkb_geometry, z.wkb_geometry) "
-            "and b.name in('CBID', 'Parkways', 'The Core', 'Main Street Mall') "
-            ")"
-            "select bz_intersection.name, bz_intersection.zip, "
-                "num_addr/st_area(geom)/27878400 addr_density "
-                "from bz_intersection "
-            "left join (select b.name, count(a.wkb_geometry) num_addr, b.zip "
-                      "from geography.sc911_address a, bz_intersection b "
-                   "where st_intersects(a.wkb_geometry, b.geom) "
-                   "group by b.name, b.zip"
-                  ") sc_addresses "
-            "on sc_addresses.name = bz_intersection.name "
-            "and sc_addresses.zip = bz_intersection.zip "
-	 )
-
-addr = pd.read_sql(q_addr, engine_blight)
-addr.zip = addr.zip.astype(str)
-addr.fillna(0, inplace=True)
-
-q_bound_char = ("with bz_intersection as ("
-            "select b.name, geoid10 zip,"
-            "st_intersection(b.wkb_geometry, z.wkb_geometry) geom "
-            "from geography.boundaries b, geography.tiger_zcta_2010 z "
-            "where st_intersects(b.wkb_geometry, z.wkb_geometry) "
-            "and b.name in('CBID', 'Parkways', 'The Core', 'Main Street Mall') "
-            ")"
-            "select b.name, b.zip, sum(livunit) tot_livunit, count(distinct luc) distinct_luc, "
-            " st_area(b.geom)/27878400 sqmi "
-            "from (select wkb_geometry, livunit, luc "
-            "from sca_parcels p, sca_pardat "
-                      "where parcelid = parid) p, bz_intersection b "
-            "where st_intersects(st_centroid(p.wkb_geometry), b.geom)"
-            "group by b.name, b.geom, b.zip"
-            )
-bound_char = pd.read_sql(q_bound_char, engine_blight)
+os.chdir("/home/nate/dropbox-caeser/Data/MIDT/downtown_businesses")
+q_bus_info = (
+    "select bus_name, address, b.name district, "
+        "regexp_replace(msg, '- ', '') land_use, livunit "
+	"from  "
+	"(select bus_name, match_addr address, msg, livunit, l.wkb_geometry "
+	 "from sca_parcels p, sca_pardat, sca_aedit, geography.bp_business_licenses l  "
+	    "where parcelid = parid  "
+            "and (tble = 'PARDAT' and fld = 'LUC')  "
+            "and val = luc "
+	    "and st_within(l.wkb_geometry, p.wkb_geometry)) l,  "
+	"(select * from geography.boundaries b  "
+	    "where name in ('CBID', 'The Core', 'Parkways', 'Main Street Mall')) b "
+	"where st_within(l.wkb_geometry, b.wkb_geometry)  "
+        )
+bus_info = pd.read_sql(q_bus_info, engine_blight)
+bus_info.to_csv("deliverables/business_info.csv")
 
 q_mlgw = ("with mlgw_sel as ("
           "select case when zip = '38014' then '38104' "
@@ -114,26 +39,103 @@ q_mlgw = ("with mlgw_sel as ("
             "when zip = '38029' then '38135' "
             "else zip end as zip, count "
             "from environment.mlgw_rates where scat = 'K')"
-          "select zip, sum(count) num_meters, st_area(wkb_geometry)/27878400 sqmi_zip "
+          "select zip, sum(count) num_meters "
           "from mlgw_sel "
           "join geography.cen_zip_2010 "
           "on geoid10 = zip "
           "group by zip, wkb_geometry order by zip"
           )
 
-mlgw = pd.read_sql(q_mlgw, engine_wwl)
-
-q_mlgw_char = (
-comb = addr.merge(mlgw, how="left", on="zip", suffixes=["_mlgw", "_addr"])
-
-q_zip_model = ("select geoid10 zip, sqmiland, pct_comm, pct_dev, age_comm"
-                "age_bldg, pct_mf, strtsdw_pct, age_sf, hu "
-                "from summary_cen_zip_2010")
-zip_model = pd.read_sql(q_zip_model, engine_wwl)
-xy = mlgw.merge(zip_model, how="left", on="zip")
-lm = linear_model()
-xy.fillna(0, inplace=True)
-lm.fit(xy[[col for col in xy.columns if col not in ["zip", "num_meters"]]], xy.num_meters)
+mlgw_meters = pd.read_sql(q_mlgw, engine_wwl)
 
 q_bound_model = (
+    "select b.{col_name}, pct_dev, age_bldg, num_sf, strtsdw_pct, "
+            "strt_miles, st_area(b.wkb_geometry)/27878000 sqmi,"
+            "num_addr "
+    "from "
+    "geography.{geography} b "
+    "join "
+    "(select t.{col_name}, 100 * sum(case when luc <> '000'  "
+                "then 1 else 0 end)::numeric/ count(luc) as pct_dev "
+        "from (sca_parcels  "
+        "join sca_pardat on parid = parcelid) as b  "
+        "join geography.{geography} as t on  "
+        "st_within(st_centroid(b.wkb_geometry), t.wkb_geometry)  "
+        "group by t.{col_name} ) dev "
+    "on dev.{col_name} = b.{col_name} "
+    "join  "
+    "(select t.{col_name}, 2014 - avg(yrblt) as age_bldg "
+        "from (sca_parcels  "
+        "join (select parid, yrblt from sca_comdat "
+        "union select parid, yrblt from sca_dweldat) as p on parid = parcelid) as b  "
+        "join geography.{geography} as t on  "
+        "st_within(st_centroid(b.wkb_geometry), t.wkb_geometry)  "
+        "group by t.{col_name}) bldg "
+    "on bldg.{col_name} = b.{col_name} "
+    "full join "
+    "(select t.{col_name}, count(parcelid) as num_sf "
+        "from (select parcelid, wkb_geometry from sca_parcels, sca_pardat  "
+        "where parid = parcelid and luc = '062') b "
+        "join geography.{geography} as t on  "
+        "st_within(st_centroid(b.wkb_geometry), t.wkb_geometry)  "
+        "group by t.{col_name}) sf "
+    "on sf.{col_name} = b.{col_name} "
+    "join "
+    "(select s.{col_name},  "
+        "case  "
+        "when (s.cnt_sdw + s.cnt_no_sdw) > 0  "
+            "then (s.cnt_sdw::float / (s.cnt_sdw + s.cnt_no_sdw)) * 100  "
+        "else 0  "
+        "end as strtsdw_pct "												 
+        "from (select b.{col_name}, " 
+        "sum(case when s.sidewalk='YES' then 1 else 0 end) as cnt_sdw,  "
+        "sum(case when s.sidewalk='NO' then 1 else 0 end) as cnt_no_sdw "
+                "from geography.{geography} as b  "
+        "left join geography.streets_with_sdw as s " 
+        "on ST_DWithin(s.wkb_geometry, b.wkb_geometry, 2) group by b.{col_name}) as s "
+    ") sdw "
+    "on sdw.{col_name} = b.{col_name} "
+    "join  "
+    "(select b.{col_name}, sum(st_length(s.wkb_geometry) / 5280) strt_miles "
+        "from geography.{geography} as b  "
+        "left join geography.streets_with_sdw as s  "
+        "on ST_DWithin(s.wkb_geometry, b.wkb_geometry, 2) group by b.{col_name} "
+    ")strt_mi  "
+    "on strt_mi.{col_name} = b.{col_name} "
+    "join  "
+    "(select b.{col_name}, count(a.wkb_geometry) num_addr  "
+         "from geography.sc911_address a, geography.{geography} b "
+         "where st_within(a.wkb_geometry, b.wkb_geometry) group by b.{col_name} "
+    ") addr "
+    "on addr.{col_name} = b.{col_name} "
+)
+
+bound = pd.read_sql(q_bound_model.format(col_name="name", geography="boundaries"), 
+        engine_blight)
+mlgw = pd.read_sql(q_bound_model.format(col_name="geoid10", geography="tiger_zcta_2010"),
+        engine_blight)
+mlgw.columns = [col if col != "geoid10" else "zip" for col in mlgw.columns]
+xy = mlgw_meters.merge(mlgw, how="left", on="zip")
+ignore = ["zip", "sqmi", "strt_miles"]#, "strtsdw_pct", "num_sf",]# "num_addr"]
+keep = [col for col in mlgw.columns if col not in ignore]
+#xy["strt_sqmi"] = xy.strt_miles/xy.sqmi
+#xy["addr_sqmi"] = xy.num_addr/xy.sqmi
+#keep.extend(["strt_sqmi", "addr_sqmi"])
+xy.fillna(0, inplace=True)
+bound.fillna(0, inplace=True)
+
+lm = linear_model.LinearRegression()
+x = xy[keep]
+y = xy.num_meters
+lm.fit(x, y)
+pred_lm = cross_val_predict(lm,x, y, cv=10)
+r2 = r2_score(y, pred_lm)
+mse = mean_squared_error(y,pred_lm)
+
+y_pred = lm.predict(bound[keep])
+bound["est_meters"] = np.rint(y_pred)
+districts = ["CBID", "The Core", "Parkways", "Main Street Mall"]
+bound[bound.name.isin(districts)][["name", "num_addr", "est_meters"]].to_csv(
+        "deliverables/utility_estimates.csv")
+
 
