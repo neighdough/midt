@@ -47,6 +47,7 @@ TODO:
 
 from caeser import utils
 import calendar
+from collections import defaultdict
 from config import cnx_params
 import datetime
 from docopt import docopt
@@ -60,15 +61,17 @@ import os
 from qgis.core import (QgsProject, QgsComposition, QgsApplication, 
                        QgsProviderRegistry, QgsRectangle, QgsPalLayerSettings,
                        QgsComposerAttributeTableV2, QgsComposerMap, QgsComposerLegend,
-                       QgsComposerPicture, QgsComposerLabel, QgsComposerFrame)
+                       QgsComposerPicture, QgsComposerLabel, QgsComposerFrame,
+                       QgsMapLayerRegistry)
 from qgis.gui import QgsMapCanvas, QgsLayerTreeMapCanvasBridge
 from PyQt4.QtCore import QFileInfo, QSize
 from PyQt4.QtXml import QDomDocument
 from PyQt4.QtGui import QImage, QPainter
-from scipy.interpolate import spline
+from scipy.interpolate import pchip
 import seaborn as sns
 import shutil
 from sqlalchemy import text
+import string
 import sys
 sys.path.append('/home/nate/source')
 from titlecase import titlecase
@@ -86,6 +89,11 @@ os.chdir("/home/nate/dropbox-caeser/Data/MIDT/Data_Warehouse/reports")
 cur_year = datetime.datetime.today().year
 ACS_SCHEMA = "acs5yr_2015"
 FILEID = ACS_SCHEMA.split("_")[-1]+"e5"
+#list of layers to be active in all maps for neighborhood report
+BASEMAP_LAYERS = ["boundaries", "boundary_mask", "street_labels", 
+                  "streets_carto", "sca_parcels"
+                 ] 
+COMPOSER_ITEMS = ["legend", "scale_bar", "main_map"]
 
 class Report:
     """
@@ -169,20 +177,25 @@ class QgisMap:
         self.project_name = project_name
         self.template_name = template_name
         self.canvas = QgsMapCanvas()
+
         self.scale = self.canvas.scale()
         self.project = QgsProject.instance()
         self.project.read(QFileInfo(project_name))
+        self.root = QgsProject.instance().layerTreeRoot()
         self.bridge = QgsLayerTreeMapCanvasBridge(
                 QgsProject.instance().layerTreeRoot(), self.canvas)
         self.bridge.setCanvasLayers()
+        self.registry = QgsMapLayerRegistry.instance()
         self.template_file = file(self.template_name)
         self.template_content = self.template_file.read()
         self.template_file.close()
         self.document = QDomDocument()
         self.document.setContent(self.template_content)
-        self.composition = QgsComposition(self.canvas.mapSettings())
+        self.map_settings = self.canvas.mapSettings()
+        self.composition = QgsComposition(self.map_settings)
         self.composition.loadFromTemplate(self.document)
         self.rectangle = self.canvas.extent()
+        self.map_layers = [lyr for lyr in self.registry.mapLayers() if self.root.findLayer(lyr)]
         self.element_methods = {QgsComposerAttributeTableV2:
                                     {"refreshAttributes": args},
                                 QgsComposerMap: 
@@ -197,6 +210,10 @@ class QgisMap:
                                 QgsComposerLabel: 
                                     {"setText": args}
                                 }
+        if "basemap" in kwargs:
+            self.basemap = kwargs["basemap"]
+        if "layers" in kwargs:
+            self.layers = kwargs["layers"]
 
 
     def get_element_methods(self):
@@ -231,6 +248,11 @@ class QgisMap:
         self.composition.refreshItems()
         self.canvas.refresh()
 
+    def set_basemap_layers(self, basemap_layers):
+        """
+
+        """
+        self.basemap_layers = basemap_layers
 
     def update_scale(self, scale):
         self.scale = scale
@@ -248,9 +270,50 @@ class QgisMap:
                 
         """
         self.rectangle = QgsRectangle(*rectangle)
+    
+    def zoom_to_layer(self, layer_name):
+        """
+        """
+        lyr = self.registry.mapLayersByName(layer_name)[0]
+        lyr_ids = [feat.id() for feat in lyr.getFeatures()]
+        self.canvas.zoomToFeatureIds(lyr, lyr_ids)
+        #multiplying scale by 1.2 seems to give sufficient space around the boundary
+        new_scale = canvas.scale() * 1.2
+        self.canvas.zoomScale(new_scale)
+        self.update_scale(new_scale)
+
+    def has_layers(self):
+        """
+
+        """
+
+        try:
+            self.basemap + self.layers
+            return True
+        except:
+            return False
 
     def update_layers(self):
-        pass
+        """
+        """
+        if not has_layers():
+            msg = ("Layers cannot be set because none have been provided. Run `set_layers` "
+                    "method and try again."
+                    )
+
+            print msg
+            return
+        else:
+            visible = []
+            for m_lyr in self.map_layers:
+                lyr = self.root.findLayer(m_lyr)
+                if lyr.layerName() in self.basemap_layers + self.layers:
+                    visible.append(m_lyr)
+                    lyr.setVisible(2) #Qt.CheckState checked
+                else:
+                    lyr.setVisible(0) #Qt.CheckState unchecked
+            self.map_settings.setLayers(visible)
+
 
     def add_label(self, layer_index, field_name):
         """
@@ -341,7 +404,7 @@ def run_violator_report(period, yr=None):
     #List of owner names in sca_owndat that should be excluded from the analysis. Names
     #are typically added based on the recommendation of various members from the Blight
     #Elimination Steering Team (BEST)
-    ignore = ["city of memphis", "shelby county tax sale", 
+    ignore = ["city of memphis", #"shelby county tax sale", 
               "health educational and housing"]
 
     q = ("select trim(both ' ' from own1) as own, "
@@ -519,9 +582,17 @@ def neighborhood_profile(nbhood=None):
     pop_shelby.rename(new_cols([col for col in pop_shelby.columns if 'pop' in col], 
                                 years), axis=1, inplace=True)
 
+   #------------------------------------------------------------------------------------ 
+   #--------------------------- Pop change by Tract -------------------------- 
+   #------------------------------------------------------------------------------------ 
     ax = plt.subplot(111)
     for tract in pop.tractid.unique():
-        plt.plot(pop[pop.tractid == tract][years].sum(), label=tract)
+        y = pop[pop.tractid == tract][years].sum()
+        x_s = np.linspace(years[0], years[-1], 200)
+        pch = pchip(years, y)
+        plt.plot(pch(x_s), label=tract)
+        #plt.plot(pop[pop.tractid == tract][years].sum(), label=tract)
+
     legend_cols = len(pop.tractid.unique())/2
     ax.legend(loc='upper center',bbox_to_anchor=(.5, 1.05), ncol=legend_cols,
             fancybox=True, shadow=True, fontsize=6)
@@ -529,6 +600,10 @@ def neighborhood_profile(nbhood=None):
     ax.set_ylabel('Population')
     ax.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x, 
                         loc: "{:,}".format(int(x))))
+    yr_labels = range(years[0] -5, years[-1] + 5, 5)
+    xi = [i for i in range(0, len(yr_labels))]
+    ax.set_xticklabels(yr_labels)
+    plt.title("Population Change by Census Tract", {"y":1.03})
     plt.tight_layout()
 
     plt.savefig('./Pictures/pop_change_tracts.jpg', dpi=300)
@@ -545,7 +620,12 @@ def neighborhood_profile(nbhood=None):
     # plt.tight_layout()
     # plt.savefig('./Pictures/pop_change_nbhood_county.jpg', dpi=300)
     # plt.close()
-    
+
+   #------------------------------------------------------------------------------------ 
+   #------------------- Data for Socioecomic table  -------------------------- 
+   #------------------------------------------------------------------------------------ 
+
+
     #median income
     q_inc = ("select * from {schema}.b19001 "
              "where geoid in ('{tracts}') and fileid = '{fileid}'")
@@ -645,6 +725,10 @@ def neighborhood_profile(nbhood=None):
     lang_vals = engine_census.execute(q_lang.format(**table_params)).fetchone()
     lang_pct = [int(round(i)) for i in lang_vals]
 
+   #------------------------------------------------------------------------------------ 
+   #--------------------------- Population Pyramid ----------------------- ---
+   #------------------------------------------------------------------------------------ 
+
     age_labels = []
     for i in range(5, 90, 5):
         if i == 5:
@@ -659,11 +743,11 @@ def neighborhood_profile(nbhood=None):
     female_index = range(27, 50)
     male_cols = build_age_query(male_index, (6,18,20), 8)
     female_cols = build_age_query(female_index, (29, 42, 44), 31)
-    q_age = "select {0} from {schema}.b01001 where geoid in ('{1}')"
-    df_male = pd.read_sql(q_age.format(','.join(i for i in male_cols),
-                            "','".join(i for i in tracts)), engine_census)
-    df_female = pd.read_sql(q_age.format(','.join(i for i in female_cols),
-                            "','".join(i for i in tracts)), engine_census)
+    q_age = "select {columns} from {schema}.b01001 where geoid in ('{tracts}')"
+    table_params["columns"] = ",".join(male_cols)
+    df_male = pd.read_sql(q_age.format(**table_params), engine_census)
+    table_params["columns"] = ",".join(female_cols)
+    df_female = pd.read_sql(q_age.format(**table_params), engine_census)
     df = df_male.append(df_female)
     df = df.transpose()
     df.columns = ['m', 'f']
@@ -685,6 +769,11 @@ def neighborhood_profile(nbhood=None):
     plt.savefig('./Pictures/pop_pyramid.jpg', dpi=300)
     plt.close()
 
+   #------------------------------------------------------------------------------------ 
+   #--------------------------- Male vs Female Chart -----------------------------------
+   #------------------------------------------------------------------------------------ 
+
+
     yticks = [0., .25, .5, .75, 1.]
     ytick_labels = ['0%', '25%', '50%', '25%', '0%']
     df[['pctm', 'pctf']].plot.bar(stacked=True, 
@@ -694,10 +783,12 @@ def neighborhood_profile(nbhood=None):
     plt.xlabel('Age')
     plt.ylabel('Percent of Group')
     plt.yticks(yticks, ytick_labels)
-    pctile_x = [17]
-    plt.plot(x, [.25, .25], '--k')
-    plt.plot(x, [.5, .5], 'k')
-    plt.plot(x, [.75, .75], '--k')
+    plt.xticks([i for i in range(len(age_labels))], age_labels)
+    pctile_x = lambda x: [x for i in range(len(df.index))]
+    plt.plot(pctile_x(.25), '--k')
+    plt.plot(pctile_x(.5), 'k')
+    plt.plot(pctile_x(.75), '--k')
+    plt.title("Ratio of Male to Female", {"y":1.03})
     plt.tight_layout()
     plt.savefig('./Pictures/mf_ratio.jpg', dpi=300)
     plt.close()
@@ -779,6 +870,13 @@ def calculate_median(incomedata):
 def ownership_profile():
     """
     Generates maps and charts for Ownership Profile page of neighborhood report
+
+    Maps:
+        - landbank
+            + current_landbank
+        - owner occupancy
+
+        
     """
 
     #selects distinct owner names for ownership in neighborhood
@@ -824,17 +922,16 @@ def ownership_profile():
     fig = plt.figure(FigureClass=Waffle,
             rows=5,
             values=vals,
-            colors=('#ffffff', '#79B473'),
+            colors=('#003BD1', '#79B473'),
             title={'label': 'Ownership Occupancy Totals', 'loc':'center'},
             labels=["{0} ({1}%)".format(k, v) for k, v in vals.items()],
-            legend={'loc': 'center', 'bbox_to_anchor': (0, -0.4), 
+            legend={'loc': 'center', 'bbox_to_anchor': (0.5, -0.4), 
                 'ncol': len(own_totals), 'framealpha': 0})
     ax = plt.gca()
     ax.set_facecolor('black')
     plt.tight_layout()
     plt.savefig('./Pictures/ownerocc_waffle.jpg', dpi=300)
     plt.close()
-
 
 
     #select counts for unique owners in neighborhood
@@ -874,6 +971,19 @@ def ownership_profile():
     plt.savefig('./Pictures/top_owners.jpg', dpi=300)
     plt.close()
 
+    own_count = pd.read_sql("select * from own_count", engine_blight)
+    
+    total_parcels = sum(own_totals)
+    unique_own = own_count.shape[0]
+    sum_top_own = df_own.props.sum()
+    pct_top_own = int(round(sum_top_own/float(total_parcels)*100,0))
+    total_own_occ = own_totals[0]
+    pct_own_occ = int(round(total_own_occ/float(total_parcels)*100, 0))
+    long_string =  "{0} parcels ({1}%) owned by 5 owners and {2} ({3}%) owner occupied"
+    print "Total Parcels: {}".format(total_parcels)
+    print "Unique Owners: {}".format(unique_own)
+    print long_string.format(sum_top_own, pct_top_own, total_own_occ, pct_own_occ)
+
 
 def make_property_table(nbhood, schema="public", table="sca_parcels"):
     """
@@ -897,15 +1007,18 @@ def make_property_table(nbhood, schema="public", table="sca_parcels"):
               "nbhood":nbhood,
               "pardat":pardat}
 
-    q_nbhood_props =("create temporary table nbhood_props as "
+    q_nbhood_props =("drop table if exists reports.nbhood_props;"
+                    "create table reports.nbhood_props as "
                     "select parcelid, lower(concat(adrno, adrstr)) paradrstr,"
-                    "initcap(concat(adrno, ' ', adrstr)) "
+                    "initcap(concat(adrno, ' ', adrstr)), p.wkb_geometry  "
                     "from {schema}.{table} p, {pardat}, " 
                         "geography.boundaries b "
                     "where st_intersects(st_centroid(p.wkb_geometry), "
                             "b.wkb_geometry) "
                     "and name = '{nbhood}' "
-                    "and parcelid = parid")
+                    "and parcelid = parid;"
+                    "create index gix_nbhood_props "
+                    "on reports.nbhood_props using gist(wkb_geometry);")
     engine_blight.execute(q_nbhood_props.format(**params))
 
 def property_table_exists():
@@ -918,6 +1031,11 @@ def property_table_exists():
 
 def property_conditions():
     """
+    Maps:
+        - code_enforcement
+            + code_enforcement_incidents
+
+
     """
     if not property_table_exists():
         make_property_table(NEIGHBORHOOD)
@@ -939,26 +1057,30 @@ def property_conditions():
     #------------------------------------------------------------------------
     lbls = sorted(df_code.reported_date.dt.year.unique())
     req_count = df_code.groupby('request_type').parcelid.count()
-    keep = req_count >= req_count.median()
+    keep = req_count >= req_count.mean()
     reqs = req_count[keep].index
     num_colors = len(reqs)
     cm = plt.get_cmap('gist_rainbow')
     fig, ax = plt.subplots()
     #generate random colors to avoid duplicating colors 
     ax.set_color_cycle([cm(1.*i/num_colors) for i in range(num_colors)])
-    for req in reqs:
+    for req in [r for r in reqs if r != "Downtown Cleanup"]:
         y = (df_code[df_code.request_type == req]
                             .request_type
                             .groupby(df_code.reported_date.dt.year).count())
         x = sorted(df_code[df_code.request_type == req].reported_date.dt.year.unique())
         x_smoothe = np.linspace(x[0], x[-1], 200)
-        y_smoothe = spline(x, y, x_smoothe)
-        plt.plot(y_smoothe, label=req)
+#        y_smoothe = BSpline(x, y, x_smoothe)
+        pch = pchip(x,y)
+        plt.plot(pch(x_smoothe), label=req)
+
     plt.legend(loc='upper center',bbox_to_anchor=(.5, 1.05), ncol=3,
             fancybox=True, shadow=True, fontsize='xx-small')
     ax.set_xticklabels(lbls)
     ax.set_ylabel("Number of Requests")
     ax.set_xlabel("Year")
+    title = "Most Frequent Code Enforcement Requests {} to present".format(min(lbls))
+    plt.title(title, {"y":1.02})
     plt.tight_layout()
     plt.savefig('./Pictures/code_viols_all.jpg', dpi=300)
     plt.close()
@@ -974,7 +1096,8 @@ def property_conditions():
                           .reset_index())
     df_code_grp_pivot = df_code_grp.pivot('month', 'year', 'parcelid')
     sns.heatmap(df_code_grp_pivot,cmap='Greens', 
-                center=df_code_grp.parcelid.median())
+                center=df_code_grp.parcelid.mean(),
+                cbar_kws={"label": "Number of Requests"})
     plt.xlabel("Year")
     plt.xticks(rotation=45)
     plt.ylabel("Month")
@@ -1006,8 +1129,9 @@ def property_conditions():
     plt.savefig('./Pictures/req_by_type.jpg', dpi=300)
     plt.close()
     
+    #calculate values for text in middle of page
     total_parcels = engine_blight.execute(("select count(parcelid) "
-                                            "from nbhood_props")).fetchone()[0]
+                                            "from reports.nbhood_props")).fetchone()[0]
 
     q_tables = [
         {"table": "mlgw_disconnects",
@@ -1025,13 +1149,16 @@ def property_conditions():
         }
     ]
 
-    q_vals = ("select count(t.{parcelid}) from {table} t, nbhood_props p "
+    q_vals = ("select count(t.{parcelid}) from {table} t, reports.nbhood_props p "
               "where t.{parcelid} = p.parcelid {options}")
 
     results = dict()
     for t in q_tables:
         result = engine_blight.execute(q_vals.format(**t)).fetchone()[0]
-        results[t["table"]] = result/float(total_parcels)
+        results[t["table"]] = pct(result/float(total_parcels))
+
+def pct(val):
+    return str(int(round(val * 100, 0))) + "%"
 
 def financial_profile():
     """
@@ -1114,11 +1241,37 @@ def financial_profile():
     pct_active = int(round(ct_active/float(ct_total)*100))
     df_tax.to_sql("tax_sale", engine_blight, schema="reports", if_exists="replace")
 
+def intro_page(nbhood_name):
+    """
+    location_overview:
+        CANVAS
+        - boundaries
+        - boundary mask
+        - bldg_2014
+        - streets_labels
+            + interstate
+            + major
+            + collector
+            + local
+        - streets_carto
+        INSET MAP
+        - boundaries
+        - Inset
+            + streets_carto_copy
+            + tiger_place_2016
+        COMPOSER
+        - scale_bar
+        - inset_map
+        - main_map
+    
+    """
+
 def run_neighborhood_report(nbhood_name):
     """
     Main method for generating neighborhood report. This method works with the following
     methods to generate the content for each of the five pages that comprise a complete
     neighborhood report:
+        + intro_page
         + property_conditions
         + ownership_profile
         + neighborhood_profile
@@ -1131,17 +1284,23 @@ def run_neighborhood_report(nbhood_name):
         None
     """
     os.chdir("./neighborhood")
-    dir_name = nbhood_name.replace(" ", "")
+    dir_name = nbhood_name.replace(" ", "_")
     report_name = dir_name + "_report.odt"
     if not os.path.exists(dir_name):
         os.mkdir(dir_name)
-    shutil.copytree("Pictures", "./"+dir_name+"/Pictures")
-    shutil.copytree("maps", "./"+dir_name+"/maps")
+    os.mkdir(dir_name+"/Pictures")
+    shutil.copytree("maps", dir_name+"/maps")
     os.chdir(dir_name)
     for f in os.listdir("./maps"):
-        #name&quot; =
-        #name =
-        #sql="name" =
+        with open("./maps/"+f, "r") as f:
+            qgis_doc = f.read()
+        str_formatter = string.Formatter()
+        qgis_doc_new = str_formatter.vformat(qgis_doc, None, 
+                                             defaultdict(str, neighborhood=nbhood_name)
+                                            )
+        with open("./maps/"+f,"w") as f:
+            f.write(qgis_doc_new)
+
     make_property_table(nbhood_name)
 
 
