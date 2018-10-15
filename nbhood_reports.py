@@ -87,7 +87,7 @@ pd.set_option('display.width', 180)
 os.chdir("/home/nate/dropbox-caeser/Data/MIDT/Data_Warehouse/reports")
 #nbhood = 'Klondike Smokey City CDC'
 cur_year = datetime.datetime.today().year
-ACS_SCHEMA = "acs5yr_2015"
+ACS_SCHEMA = "acs5yr_2016"
 FILEID = ACS_SCHEMA.split("_")[-1]+"e5"
 #list of layers to be active in all maps for neighborhood report
 BASEMAP_LAYERS = ["boundaries", "boundary_mask", "street_labels", 
@@ -148,6 +148,12 @@ class Report:
     def update_table(self, table_name, *args):
         """
         update values in table
+        """
+        pass
+
+    def update_text(self):
+        """
+        Locate 
         """
         pass
 
@@ -248,11 +254,11 @@ class QgisMap:
         self.composition.refreshItems()
         self.canvas.refresh()
 
-    def set_basemap_layers(self, basemap_layers):
+    def set_layers(self, layers):
         """
 
         """
-        self.basemap_layers = basemap_layers
+        self.layers = layers
 
     def update_scale(self, scale):
         self.scale = scale
@@ -293,10 +299,18 @@ class QgisMap:
         except:
             return False
 
-    def update_layers(self):
+    def set_visible_layers(self, map_element, keep_set=False):
         """
+        Set which layers are visible in canvas before saving
+
+        Args:
+            map_element (str): name of the composer map element
+            keep_set (bool): determine whether to lock current layers when working with 
+                multiple map items in a single composer such as an inset map.
+        Returns:
+            None
         """
-        if not has_layers():
+        if not self.has_layers():
             msg = ("Layers cannot be set because none have been provided. Run `set_layers` "
                     "method and try again."
                     )
@@ -307,12 +321,17 @@ class QgisMap:
             visible = []
             for m_lyr in self.map_layers:
                 lyr = self.root.findLayer(m_lyr)
-                if lyr.layerName() in self.basemap_layers + self.layers:
+                if lyr.layerName() in self.basemap + self.layers:
                     visible.append(m_lyr)
                     lyr.setVisible(2) #Qt.CheckState checked
                 else:
                     lyr.setVisible(0) #Qt.CheckState unchecked
             self.map_settings.setLayers(visible)
+            comp_map = self.composition.getComposerItemById(map_element)
+            comp_map.setMapCanvas(self.canvas)
+            comp_map.setNewExtent(self.canvas.extent())
+            comp_map.setLayerSet(visible)
+            comp_map.setKeepLayerSet(keep_set)
 
 
     def add_label(self, layer_index, field_name):
@@ -380,7 +399,7 @@ def run_violator_report(period, yr=None):
         None
     """
     os.chdir("./monthly_code_violators")
-    year = yr if yr else cur_year
+    year = int(yr) if yr else cur_year
     if len(period) == 1:
         start = period[0]
         finish = period[0]
@@ -392,7 +411,6 @@ def run_violator_report(period, yr=None):
         return 
     start_date = format_date(start, year)[:-2] + "01"
     end_date = format_date(finish, year)
-    
     date_label = "{0} {1} to {2} {3}, {4}".format(
                                             calendar.month_name[int(start)],
                                             "1",
@@ -404,7 +422,7 @@ def run_violator_report(period, yr=None):
     #List of owner names in sca_owndat that should be excluded from the analysis. Names
     #are typically added based on the recommendation of various members from the Blight
     #Elimination Steering Team (BEST)
-    ignore = ["city of memphis", #"shelby county tax sale", 
+    ignore = ["city of memphis", "shelby county tax sale", 
               "health educational and housing"]
 
     q = ("select trim(both ' ' from own1) as own, "
@@ -1289,20 +1307,21 @@ def run_neighborhood_report(nbhood_name):
     if not os.path.exists(dir_name):
         os.mkdir(dir_name)
     os.mkdir(dir_name+"/Pictures")
-    shutil.copytree("maps", dir_name+"/maps")
+    shutil.copytree("REPORT_TEMPLATE/maps", dir_name+"/maps")
+    shutil.copy("REPORT_TEMPLATE/report_template.odt", os.path.join(dir_name, report_name))
     os.chdir(dir_name)
     for f in os.listdir("./maps"):
-        with open("./maps/"+f, "r") as f:
-            qgis_doc = f.read()
+        with open("./maps/"+f, "r") as f_qgs:
+            qgis_doc = f_qgs.read()
         str_formatter = string.Formatter()
         qgis_doc_new = str_formatter.vformat(qgis_doc, None, 
                                              defaultdict(str, neighborhood=nbhood_name)
                                             )
-        with open("./maps/"+f,"w") as f:
-            f.write(qgis_doc_new)
-
-    make_property_table(nbhood_name)
-
+        with open("./maps/"+f,"w") as f_qgs:
+            f_qgs.write(qgis_doc_new)
+    
+    #creates table (reports.nbhood_props) in postgres with all parcels in the study area
+    make_property_table(nbhood_name) 
 
     
 def main(args):
