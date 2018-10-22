@@ -1,6 +1,4 @@
 from lxml import etree
-from odf.opendocument import load
-from odf import (text, draw, table)
 import zipfile
 import os
 import shutil
@@ -38,7 +36,11 @@ ns = {"draw": "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0",
       }
 
 #Update picture names
-img_path= ("//draw:frame/draw:image[re:match(@xlink:href,'Pictures\/[0-9A-z]+.jpg')]")
+img_name = "location_overview"
+img_path = ("//draw:frame[@draw:name='{}']/draw:image".format(img_name))
+img = root_content.xpath(img_path, namespaces=ns)[0]
+img.attrib["{{{xlink}}}href".format(**ns)] = "Pictures/" + img_name + ".jpg"
+
 
 #Report side bar title for each page
 title_xpath = ("//draw:frame[@draw:name='title_{}']/"
