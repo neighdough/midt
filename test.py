@@ -18,9 +18,9 @@ template_path = 'location_overview.qpt'
 
 canvas = QgsMapCanvas() 
 canvas.resize(QSize(1450, 850)) 
-start = time.time()
+#start = time.time()
 QgsProject.instance().read(QFileInfo(project_path)) 
-end = time.time()
+#end = time.time()
 root = QgsProject.instance().layerTreeRoot() 
 bridge = QgsLayerTreeMapCanvasBridge(root, canvas) 
 bridge.setCanvasLayers() 
@@ -33,20 +33,20 @@ document = QDomDocument()
 document.setContent(template_content) 
 map_settings = canvas.mapSettings()
 composition = QgsComposition(map_settings) 
-start = time.time()
+#start = time.time()
 composition.loadFromTemplate(document) 
-end = time.time()
+#end = time.time()
 
 #create list of all layers currently in the map 
 map_layers = [lyr for  lyr in registry.mapLayers() if root.findLayer(lyr)] 
 #these layers are common for all maps
 basemap = ["streets_labels", "streets_carto", "sca_parcels",
-            "boundary", "boundary_mask"
+            "boundaries", "boundary_mask"
           ]  
 
 #this section sets up an inset map that shows the project location
 #in context of the region
-inset_layers = ["boundary", "tiger_place_2016", "streets_carto_inset"] 
+inset_layers = ["boundaries", "tiger_place_2016", "streets_carto_inset"] 
 # #this loop is to activate layers shown in inset map 
 inset_visible = []
 for map_lyr in map_layers: 
@@ -82,7 +82,7 @@ for map_lyr in map_layers:
     else: 
         lyr.setVisible(0)
 
-boundary = registry.mapLayersByName("boundary")[0] 
+boundary = registry.mapLayersByName("boundaries")[0] 
 ids = [f.id() for f in boundary.getFeatures()]
 canvas.zoomToFeatureIds(boundary, ids)
 canvas.zoomScale(canvas.scale() * 1.2)
