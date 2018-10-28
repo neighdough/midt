@@ -100,7 +100,7 @@ class Report:
     Class used to handle the report creation and modification
     """
 
-    def __init__(self, nbhood_name, z_in, z_out, *args, **kwargs):
+    def __init__(self, nbhood_name, *args, **kwargs):
         """
         Parameters:
             nbhood_name (str): Name of the neighborhood that report is being generated
@@ -110,12 +110,13 @@ class Report:
                 completion
         """
         self.nbhood = nbhood_name
-        self.z_in = zipfile.ZipFile(z_in)
-        self.zip_out = zipfile.ZipFile(z_out, "w")
+        dir_name = self.nbhood.replace(" ", "_")
+        self.zip_in = zipfile.ZipFile(dir_name+"_report.odt")
+        self.zip_out = zipfile.ZipFile(dir_name+"_report_new.odt", "w")
         self.xml_content = self.zip_in.read("content.xml")
         self.xml_manifest = self.zip_in.read("META-INF/manifest.xml")
         self.root_content = etree.fromstring(self.xml_content)
-        seslf.root_mainifest = etree.fromstring(self.xml_manifest)
+        self.root_manifest = etree.fromstring(self.xml_manifest)
         
         #All required namespace prefixes needed to locate xml tags in odt
 	self.ns = {"draw": "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0",
@@ -127,7 +128,22 @@ class Report:
 		   "xlink": "http://www.w3.org/1999/xlink",
 		   "re:": "http://exslt.org/regular-expressions"
 		  }
-        
+
+    def update_image_path(self, img_name):
+        """
+        update picture names referenced in 
+        """
+        img_path = ("//draw:frame[@draw:name='{}']/draw:image".format(img_name))
+        img = self.root_content.xpath(img_path, namespaces=self.ns)[0]
+        orig_img = img.attrib["{{{xlink}}}href".format(**self.ns)]
+        new_img = "Pictures/" + img_name + ".jpg"
+        #update image name in file manifest before updating link in content.xml
+        path = "//manifest:file-entry[@manifest:full-path='{}']".format(orig_img)
+        manifest_attr = self.root_manifest.xpath(path.format(path),namespaces=self.ns)[0]
+        manifest_attr.attrib["{{{manifest}}}full-path".format(**self.ns)] = new_img
+        img.attrib["{{{xlink}}}href".format(**self.ns)] = new_img
+
+       
     def create_titles(self):
         """
         """
@@ -137,7 +153,15 @@ class Report:
         """
         Finalize report and save to disk
         """
-        pass
+        for f in self.zip_in.filelist:
+            if (f.filename not in ["content.xml", "META-INF/manifest.xml"]
+                    and "Pictures" not in f.filename):
+                self.zip_out.writestr(f.filename, self.zip_in.read(f.filename))
+        self.zip_out.writestr("content.xml", etree.tostring(self.root_content))
+        self.zip_out.writestr("META-INF/manifest.xml", 
+                etree.tostring(self.root_manifest))  
+        for pic in os.listdir("./Pictures"):
+            self.zip_out.write("./Pictures/"+pic)
 
     def insert_image(self, image_name):
         """
@@ -151,13 +175,35 @@ class Report:
         """
         pass
 
-    def update_text(self):
+    def update_title(self, neighborhood_name, tag_name="main"):
         """
-        Locate 
-        """
-        pass
-
+        Update title on each page on report.
         
+        Args:
+            neighborhood_name (str): name of the neighborhood that the report is being 
+                generated for.
+        Optional Args:
+            tag_name (str): references the element tag in content.xml to determine if the 
+                date should be included in the string. `main` refers to the title on the
+                main page of the report. Acceptable values include:
+                    + own
+                    + property
+                    + neighborhood
+                    + financial
+        Returns:
+            None
+        """
+        title_xpath = ("//draw:frame[@draw:name='title_{}']/"
+                       "draw:text-box/text:p/text:span")
+
+        title = self.root_content.xpath(title_xpath.format(tag_name), 
+                namespaces=self.ns)[1]
+        if tag_name == "main":
+            title.text = neighborhood_name
+        else:
+            title.text = "{0} {1}".format(neighborhood_name, 
+                                    "{:%B %d, %Y}".format(datetime.datetime.today()))
+
 
 
 class QgisMap:
@@ -284,7 +330,7 @@ class QgisMap:
         lyr_ids = [feat.id() for feat in lyr.getFeatures()]
         self.canvas.zoomToFeatureIds(lyr, lyr_ids)
         #multiplying scale by 1.2 seems to give sufficient space around the boundary
-        new_scale = canvas.scale() * 1.2
+        new_scale = self.canvas.scale() * 1.2
         self.canvas.zoomScale(new_scale)
         self.update_scale(new_scale)
 
@@ -299,39 +345,48 @@ class QgisMap:
         except:
             return False
 
-    def set_visible_layers(self, map_element, keep_set=False):
+    def set_visible_layers(self, map_element, visible_layers, 
+            zoom_layer=None,keep_set=False):
         """
         Set which layers are visible in canvas before saving
 
         Args:
             map_element (str): name of the composer map element
+            visible_layers (list:str): list containing names of layers as written in 
+                TOC that should be visible on exported image.
+        Optional Args:
+            zoom_layer (str): name of layer to be used as map extent
             keep_set (bool): determine whether to lock current layers when working with 
                 multiple map items in a single composer such as an inset map.
         Returns:
             None
         """
-        if not self.has_layers():
-            msg = ("Layers cannot be set because none have been provided. Run `set_layers` "
-                    "method and try again."
-                    )
+        #if not composer_layers:
+        #    composer_layers = self.map_layers
+        # if not self.has_layers():
+           # msg = ("Layers cannot be set because none have been provided. Run `set_layers` "
+                   # "method and try again."
+                   # )
 
-            print msg
-            return
-        else:
-            visible = []
-            for m_lyr in self.map_layers:
-                lyr = self.root.findLayer(m_lyr)
-                if lyr.layerName() in self.basemap + self.layers:
-                    visible.append(m_lyr)
-                    lyr.setVisible(2) #Qt.CheckState checked
-                else:
-                    lyr.setVisible(0) #Qt.CheckState unchecked
-            self.map_settings.setLayers(visible)
-            comp_map = self.composition.getComposerItemById(map_element)
-            comp_map.setMapCanvas(self.canvas)
-            comp_map.setNewExtent(self.canvas.extent())
-            comp_map.setLayerSet(visible)
-            comp_map.setKeepLayerSet(keep_set)
+           # print msg
+           # return
+        # else:
+        visible = []
+        for m_lyr in self.map_layers:
+            lyr = self.root.findLayer(m_lyr)
+            if lyr.layerName() in visible_layers:#self.basemap + self.layers:
+                visible.append(m_lyr)
+                lyr.setVisible(2) #Qt.CheckState checked
+            else:
+                lyr.setVisible(0) #Qt.CheckState unchecked
+        if zoom_layer:
+            self.zoom_to_layer(zoom_layer)
+        self.map_settings.setLayers(visible)
+        comp_map = self.composition.getComposerItemById(map_element)
+        comp_map.setMapCanvas(self.canvas)
+        comp_map.setNewExtent(self.canvas.extent())
+        comp_map.setLayerSet(visible)
+        comp_map.setKeepLayerSet(keep_set)
 
 
     def add_label(self, layer_index, field_name):
@@ -379,7 +434,7 @@ class QgisMap:
         imagePainter.end()
         image.save(".".join([map_name,extension]), extension)
         self.project.clear()
-        self.app.exitQgis()
+        self.app.exit()#self.app.exitQgis()
     
     def close(self):
         self.project.clear()
@@ -885,7 +940,7 @@ def calculate_median(incomedata):
 		sample_median = k_hat * pow(2, (1/theta_hat))
 	return sample_median
 
-def ownership_profile():
+def ownership_profile(nhood_name, report):
     """
     Generates maps and charts for Ownership Profile page of neighborhood report
 
@@ -896,6 +951,26 @@ def ownership_profile():
 
         
     """
+    #------------------------------------------------------------------------
+    #----------------------- Ownership Profile Maps -------------------------
+    #------------------------------------------------------------------------
+    template_landbank = "landbank"
+    map_landbank = QgisMap("./maps/report_maps.qgs", 
+                           "./maps/{}.qpt".format(template_landbank))
+    basemap_layers = ["boundaries", "boundary_mask", "streets_labels", 
+                      "steets_carto", "sca_parcels"
+                      ]
+    map_landbank.set_visible_layers("main_map", basemap_layers + ["current_landbank"],
+                                    "boundaries")
+    map_landbank.save_map("./Pictures/{}".format(template_landbank), "jpg")
+    report.update_image_path(template_landbank)
+    template_own = "owner_occupancy"
+    map_own = QgisMap("./maps/report_maps.qgs",
+                      "./maps/{}.qpt".format(template_own))
+    map_own.set_visible_layers("main_map", basemap_layers+["own_occ_parcels"],
+                               "boundaries")
+    map_own.save_map("./Pictures/{}".format(template_own), "jpg")
+    report.update_image_path(template_own)
 
     #selects distinct owner names for ownership in neighborhood
     q_make_distinct = ("drop table if exists own_count;"
@@ -915,8 +990,8 @@ def ownership_profile():
                                 "from sca_owndat) own "
                             "on own.parid = parcelid "
                             "group by own_adr order by own_adr")
-    engine_blight.execute(q_make_distinct.format(nbhood))
-
+    engine_blight.execute(q_make_distinct.format(nhood_name))
+    
     #------------------------------------------------------------------------
     #------------------Waffle Chart for Owner Occupancy----------------------
     #------------------------------------------------------------------------
@@ -926,10 +1001,10 @@ def ownership_profile():
                 "(select lower(concat(adrno,adrstr)) ownadr, parid "
                         "from sca_owndat) "
                 "select ownocc, nonownocc from "
-                "(select count(parcelid) ownocc from nbhood_props, own "
+                "(select count(parcelid) ownocc from reports.nbhood_props, own "
                 "where parcelid = parid and paradrstr = ownadr) oc "
                 "join "
-                "(select count(parcelid) nonownocc from nbhood_props, own "
+                "(select count(parcelid) nonownocc from reports.nbhood_props, own "
                 "where parcelid = parid and paradrstr <> ownadr) noc "
                 "on 1 = 1")
     own_totals = engine_blight.execute(q_ownocc).fetchone()
@@ -948,8 +1023,10 @@ def ownership_profile():
     ax = plt.gca()
     ax.set_facecolor('black')
     plt.tight_layout()
-    plt.savefig('./Pictures/ownerocc_waffle.jpg', dpi=300)
+    waffle_name = "ownerocc_waffle"
+    plt.savefig('./Pictures/{}.jpg'.format(waffle_name), dpi=300)
     plt.close()
+    report.update_image_path(waffle_name)
 
 
     #select counts for unique owners in neighborhood
@@ -986,8 +1063,10 @@ def ownership_profile():
     ax.set_yticklabels(df_own.own.tolist())
     ax.set_xlabel('Number of Properties')
     plt.tight_layout()
-    plt.savefig('./Pictures/top_owners.jpg', dpi=300)
+    top_owner_name = "top_owners"
+    plt.savefig('./Pictures/{}.jpg'.format(top_owner_name), dpi=300)
     plt.close()
+    report.update_image_path(top_owner_name)
 
     own_count = pd.read_sql("select * from own_count", engine_blight)
     
@@ -1002,6 +1081,7 @@ def ownership_profile():
     print "Unique Owners: {}".format(unique_own)
     print long_string.format(sum_top_own, pct_top_own, total_own_occ, pct_own_occ)
 
+    report.update_title(nhood_name, "own")
 
 def make_property_table(nbhood, schema="public", table="sca_parcels"):
     """
@@ -1041,7 +1121,7 @@ def make_property_table(nbhood, schema="public", table="sca_parcels"):
 
 def property_table_exists():
     try:
-        q_table = "select * from nbhood_props"
+        q_table = "select * from reports.nbhood_props"
         engine_blight.execute(q_table)
         return True
     except:
@@ -1057,10 +1137,10 @@ def property_conditions():
     """
     if not property_table_exists():
         make_property_table(NEIGHBORHOOD)
-    df_props = pd.read_sql("select * from nbhood_props", engine_blight)
+    df_props = pd.read_sql("select * from reports.nbhood_props", engine_blight)
     #selects all of the code enforcement violations over time
     q_code = ("select * from "
-	"nbhood_props,"
+	"reports.nbhood_props,"
             "(select incident_id, category,request_type, reported_date, "
             "summary, group_name, parcel_id "
 	"from com_incident) incident "
@@ -1186,11 +1266,11 @@ def financial_profile():
     tax_yr = engine_blight.execute("select taxyr from sca_pardat limit 1").fetchone()[0]
     if not property_table_exists():
         make_property_table(NEIGHBORHOOD)
-    df_props = pd.read_sql("select * from nbhood_props", engine_blight)
+    df_props = pd.read_sql("select * from reports.nbhood_props", engine_blight)
 
     #--------------------------Percent change in appraised value-------------------------
     q_appr = ("select parcelid, apr_cur, apr01 "
-              "from nbhood_props, "
+              "from reports.nbhood_props, "
               "(select asmt.parid, a01.rtotapr apr01, asmt.rtotapr apr_cur "
                 "from sca_asmt asmt, geography.sca_asmt_2001 a01 "
                 "where asmt.parid = a01.parid) a "
@@ -1233,7 +1313,7 @@ def financial_profile():
     dt_val = str(tax_yr - 1)
     #limit selection to parcels in neighborhood parcels
     sales_nbhood = (engine_blight.execute(q_sales
-                                 .format(dt_val, ", nbhood_props where parcelid = parid"))
+                                 .format(dt_val, ", reports.nbhood_props where parcelid = parid"))
                                  .fetchone()[0])
     #limit selection to city parcels
     sales_city = (engine_blight.execute(q_sales
@@ -1246,7 +1326,7 @@ def financial_profile():
 
     #-----------------------------------Tax Sale-----------------------------------------
     q_tax = ("select parcelid, sum(sumdue) due, sum(sumrecv) recv, status "
-             "from nbhood_props n, sc_trustee t "
+             "from reports.nbhood_props n, sc_trustee t "
              "where n.parcelid = parid "
              "and load_date = (select max(load_date) from sc_trustee) "
              "group by parcelid, status "
@@ -1259,30 +1339,32 @@ def financial_profile():
     pct_active = int(round(ct_active/float(ct_total)*100))
     df_tax.to_sql("tax_sale", engine_blight, schema="reports", if_exists="replace")
 
-def intro_page(nbhood_name):
+def intro_page(nbhood_name, report):
     """
-    location_overview:
-        CANVAS
-        - boundaries
-        - boundary mask
-        - bldg_2014
-        - streets_labels
-            + interstate
-            + major
-            + collector
-            + local
-        - streets_carto
-        INSET MAP
-        - boundaries
-        - Inset
-            + streets_carto_copy
-            + tiger_place_2016
-        COMPOSER
-        - scale_bar
-        - inset_map
-        - main_map
+    Updates necessary elements contained on page 1 of report.
+
+    Args:
+        nbhood_name (str): name of neighborhood entered in terminal at run time
+        report (:obj: Report): Report object created with `run_neibhorhood_report`
     
     """
+    template_name = "location_overview"
+    qmap = QgisMap("./maps/report_maps.qgs", 
+                   "./maps/{}.qpt".format(template_name))
+    inset_layers = ["boundaries", "tiger_place_2016", "streets_carto_inset"]
+    map_layers = ["streets_labels", "streets_carto", "sca_parcels",
+                  "boundaries", "boundary_mask", "bldg_2014"
+                  ] 
+    #inset_map
+    qmap.set_visible_layers("inset_map", inset_layers, 
+            "tiger_place_2016", True)
+    #main map 
+    qmap.set_visible_layers("main_map", map_layers,
+            "boundaries", False)
+    qmap.save_map("./Pictures/"+template_name)
+    report.update_title(nbhood_name, "main")
+    report.update_image_path(template_name)
+
 
 def run_neighborhood_report(nbhood_name):
     """
@@ -1306,9 +1388,9 @@ def run_neighborhood_report(nbhood_name):
     report_name = dir_name + "_report.odt"
     if not os.path.exists(dir_name):
         os.mkdir(dir_name)
-    os.mkdir(dir_name+"/Pictures")
-    shutil.copytree("REPORT_TEMPLATE/maps", dir_name+"/maps")
-    shutil.copy("REPORT_TEMPLATE/report_template.odt", os.path.join(dir_name, report_name))
+        os.mkdir(dir_name+"/Pictures")
+        shutil.copytree("REPORT_TEMPLATE/maps", dir_name+"/maps")
+        shutil.copy("REPORT_TEMPLATE/report_template.odt", os.path.join(dir_name, report_name))
     os.chdir(dir_name)
     for f in os.listdir("./maps"):
         with open("./maps/"+f, "r") as f_qgs:
@@ -1321,9 +1403,20 @@ def run_neighborhood_report(nbhood_name):
             f_qgs.write(qgis_doc_new)
     
     #creates table (reports.nbhood_props) in postgres with all parcels in the study area
+    print "Building database tables.\n"
     make_property_table(nbhood_name) 
+    print "Setting up report template.\n"
+    report = Report(nbhood_name)
+    print "Generating content for Page 1.\n"
+    intro_page(nbhood_name, report)
+    print "Generating content for Page 2.\n"
+    ownership_profile(nbhood_name, report)
+    report.save_report()
 
-    
+
+
+
+
 def main(args):
     if args["neighborhood"]:
         NEIGHBORHOOD = args["<neighborhood_name>"]
@@ -1336,4 +1429,5 @@ def main(args):
 if __name__=="__main__":
     args = docopt(__doc__)
     main(args)
+
 
