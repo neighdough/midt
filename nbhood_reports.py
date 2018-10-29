@@ -205,7 +205,6 @@ class Report:
                                     "{:%B %d, %Y}".format(datetime.datetime.today()))
 
 
-
 class QgisMap:
     """
     Class used to automatically export images from pre-formatted QGIS maps. Individual
@@ -213,32 +212,50 @@ class QgisMap:
     in the maps that are automated.
     """
     
-    def __init__(self, project_name, template_name, *args, **kwargs):
+    def __init__(self, project_name, *args, **kwargs):
         """
         
         Parameters:
             project_name (str): Name of qgs file containing maps to be generated
-            template_name (str): Each QGIS map composer must be saved as a template 
-                (qpt) file in order to be loaded for automated map generation.
-        """
+         """
         gui_flag = True
         self.app = QgsApplication(sys.argv, True)
         self.app.setPrefixPath("/usr", True)
         self.app.initQgis()
 
         self.project_name = project_name
-        self.template_name = template_name
-        self.canvas = QgsMapCanvas()
-
-        self.scale = self.canvas.scale()
         self.project = QgsProject.instance()
         self.project.read(QFileInfo(project_name))
-        self.root = QgsProject.instance().layerTreeRoot()
-        self.bridge = QgsLayerTreeMapCanvasBridge(
-                QgsProject.instance().layerTreeRoot(), self.canvas)
+   
+    def root(self):
+        return self.project.layerTreeRoot()
+
+    def close(self):
+        self.project.clear()
+        self.app.exitQgis()
+
+
+
+class QgisTemplate():
+  
+    def __init__(self, qgis_map, template_name, *args, **kwargs):
+        """
+        
+        Parameters:
+            qgis_map (obj: QgisMap): a QGIS map document object
+            template_name (str): Each QGIS map composer must be saved as a template 
+                (qpt) file in order to be loaded for automated map generation.
+        """
+        self.canvas = QgsMapCanvas()
+        self.root = qgis_map.root()
+        self.bridge = QgsLayerTreeMapCanvasBridge(self.root, self.canvas)
         self.bridge.setCanvasLayers()
+
         self.registry = QgsMapLayerRegistry.instance()
-        self.template_file = file(self.template_name)
+
+        self.map_layers = [lyr for lyr in self.registry.mapLayers() if self.root.findLayer(lyr)]
+        self.scale = self.canvas.scale()
+        self.template_file = file(template_name)
         self.template_content = self.template_file.read()
         self.template_file.close()
         self.document = QDomDocument()
@@ -247,7 +264,6 @@ class QgisMap:
         self.composition = QgsComposition(self.map_settings)
         self.composition.loadFromTemplate(self.document)
         self.rectangle = self.canvas.extent()
-        self.map_layers = [lyr for lyr in self.registry.mapLayers() if self.root.findLayer(lyr)]
         self.element_methods = {QgsComposerAttributeTableV2:
                                     {"refreshAttributes": args},
                                 QgsComposerMap: 
@@ -268,6 +284,7 @@ class QgisMap:
             self.layers = kwargs["layers"]
 
 
+        
     def get_element_methods(self):
         return self.element_methods
 
@@ -433,13 +450,9 @@ class QgisMap:
         self.composition.renderPage(imagePainter, 0)
         imagePainter.end()
         image.save(".".join([map_name,extension]), extension)
-        self.project.clear()
-        self.app.exit()#self.app.exitQgis()
+        #self.project.clear()
+        #self.app.exit()#self.app.exitQgis()
     
-    def close(self):
-        self.project.clear()
-        self.app.exitQgis()
-
 def run_violator_report(period, yr=None):
     """
     Primary function that handles the query and generates the main output
@@ -569,8 +582,8 @@ def owner_violator_map(dframe, group, date_label):
     dframe.index += 1
     dframe.to_sql("owner_coords", engine_blight, 
                     schema="reports", if_exists="replace", index_label="id")
-    
-    nhood_map = QgisMap("map.qgs", "map_template.qpt")
+    nhood_doc = QgisMap("map.qgs")
+    nhood_map = QgisTemplate(nhood_doc, "map_template.qpt")
     logo_path = ("/home/nate/dropbox-caeser/CAESER"
                  "/logos_letterhead_brand_standards/logos/UofM_horiz_cmyk_CAESER.png")
     nhood_map.add_element("logo", setPicturePath=logo_path)
@@ -585,6 +598,7 @@ def owner_violator_map(dframe, group, date_label):
 
     map_title = "owner_violator_" + date_label.replace(" ", "_").replace(",", "")
     nhood_map.save_map(map_title)
+#    nhood_doc.close()
     
 
 def format_date(month, year):
@@ -940,7 +954,7 @@ def calculate_median(incomedata):
 		sample_median = k_hat * pow(2, (1/theta_hat))
 	return sample_median
 
-def ownership_profile(nhood_name, report):
+def ownership_profile(nhood_name, report, map_document):
     """
     Generates maps and charts for Ownership Profile page of neighborhood report
 
@@ -955,7 +969,7 @@ def ownership_profile(nhood_name, report):
     #----------------------- Ownership Profile Maps -------------------------
     #------------------------------------------------------------------------
     template_landbank = "landbank"
-    map_landbank = QgisMap("./maps/report_maps.qgs", 
+    map_landbank = QgisTemplate(map_document, 
                            "./maps/{}.qpt".format(template_landbank))
     basemap_layers = ["boundaries", "boundary_mask", "streets_labels", 
                       "steets_carto", "sca_parcels"
@@ -965,7 +979,7 @@ def ownership_profile(nhood_name, report):
     map_landbank.save_map("./Pictures/{}".format(template_landbank), "jpg")
     report.update_image_path(template_landbank)
     template_own = "owner_occupancy"
-    map_own = QgisMap("./maps/report_maps.qgs",
+    map_own = QgisTemplate(map_document,
                       "./maps/{}.qpt".format(template_own))
     map_own.set_visible_layers("main_map", basemap_layers+["own_occ_parcels"],
                                "boundaries")
@@ -1082,6 +1096,7 @@ def ownership_profile(nhood_name, report):
     print long_string.format(sum_top_own, pct_top_own, total_own_occ, pct_own_occ)
 
     report.update_title(nhood_name, "own")
+    #map_landbank.close()
 
 def make_property_table(nbhood, schema="public", table="sca_parcels"):
     """
@@ -1339,17 +1354,18 @@ def financial_profile():
     pct_active = int(round(ct_active/float(ct_total)*100))
     df_tax.to_sql("tax_sale", engine_blight, schema="reports", if_exists="replace")
 
-def intro_page(nbhood_name, report):
+def intro_page(nbhood_name, report, map_document):
     """
     Updates necessary elements contained on page 1 of report.
 
     Args:
         nbhood_name (str): name of neighborhood entered in terminal at run time
         report (:obj: Report): Report object created with `run_neibhorhood_report`
+        map_document (:obj: QgisMap): QGIS map document object
     
     """
     template_name = "location_overview"
-    qmap = QgisMap("./maps/report_maps.qgs", 
+    qmap = QgisTemplate(map_document, 
                    "./maps/{}.qpt".format(template_name))
     inset_layers = ["boundaries", "tiger_place_2016", "streets_carto_inset"]
     map_layers = ["streets_labels", "streets_carto", "sca_parcels",
@@ -1408,10 +1424,12 @@ def run_neighborhood_report(nbhood_name):
     print "Setting up report template.\n"
     report = Report(nbhood_name)
     print "Generating content for Page 1.\n"
-    intro_page(nbhood_name, report)
+    report_map = QgisMap("./maps/report_maps.qgs")
+    intro_page(nbhood_name, report, report_map)
     print "Generating content for Page 2.\n"
-    ownership_profile(nbhood_name, report)
+    ownership_profile(nbhood_name, report, report_map)
     report.save_report()
+    report_map.close()
 
 
 
