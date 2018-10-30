@@ -169,11 +169,33 @@ class Report:
         """
         pass
 
-    def update_table(self, table_name, *args):
+    def update_table(self, table_name, header_row, row_values):
         """
         update values in table
+
+        Args:
+            table_name (str): name of table in table:name tag to be used in query to pull
+                rows for to be updated
+            header_row (list:int): list of integers containing header rows to be skipped
+                while updating row values
+            row_values (list:str): list of values with new data to be inserted into final
+                report
+
+        Returns:
+            None
         """
-        pass
+        table_xpath = "//table:table[@table:name='{}']/table:table-row".format(table_name)
+        table = self.root_content.xpath(table_xpath, namespaces=self.ns)
+        num_rows = len(table)
+        for row_num in [i for i in range(num_rows) if i not in header_row]:
+            row = table[row_num].xpath(".//text:p", namespaces=self.ns)
+            col_num = 0
+            print [i.text for i in row]
+            for cell in row:
+                val = row_values[row_num-1][col_num]
+                cell.text = str(val)
+                col_num += 1
+            print [i.text for i in row]
 
     def update_title(self, neighborhood_name, tag_name="main"):
         """
@@ -203,7 +225,15 @@ class Report:
         else:
             title.text = "{0} {1}".format(neighborhood_name, 
                                     "{:%B %d, %Y}".format(datetime.datetime.today()))
+    
+    def update_text(self, tag_name, text_values):
+        """
 
+        """
+        text_path = ("//draw:frame[@draw:name='{}']/draw:text-box/text:p/text:span")
+        values = self.root_content.xpath(text_path.format(tag_name), namespaces=self.ns)
+        for i in range(len(values)):
+            values[i].text = text_values[i]
 
 class QgisMap:
     """
@@ -987,8 +1017,8 @@ def ownership_profile(nhood_name, report, map_document):
     report.update_image_path(template_own)
 
     #selects distinct owner names for ownership in neighborhood
-    q_make_distinct = ("drop table if exists own_count;"
-                        "create temporary table own_count as "
+    q_make_distinct = ("drop table if exists reports.own_count;"
+                        "create table reports.own_count as "
                             "select own_adr, count(own_adr) from "
                             "(select parcelid, parid, "
                                 "concat(adrno, ' ', adrstr) par_adr "
@@ -1048,7 +1078,7 @@ def ownership_profile(nhood_name, report, map_document):
             "initcap(concat(own_adr, ' ', statecode, ' ', zip1)) as adr, "
             "count as props "
             "from "
-            "(select own_adr, count from own_count "
+            "(select own_adr, count from reports.own_count "
             " order by count desc limit 5) k "
             "inner join (select "
                   "case when lower(own1) like '%shelby county tax sale%' "
@@ -1081,8 +1111,12 @@ def ownership_profile(nhood_name, report, map_document):
     plt.savefig('./Pictures/{}.jpg'.format(top_owner_name), dpi=300)
     plt.close()
     report.update_image_path(top_owner_name)
+    
+    #update ownership table in report
+    df_own.index += 1 
+    report.update_table("tbl_own", [0], df_own.to_records())
 
-    own_count = pd.read_sql("select * from own_count", engine_blight)
+    own_count = pd.read_sql("select * from reports.own_count", engine_blight)
     
     total_parcels = sum(own_totals)
     unique_own = own_count.shape[0]
@@ -1090,6 +1124,25 @@ def ownership_profile(nhood_name, report, map_document):
     pct_top_own = int(round(sum_top_own/float(total_parcels)*100,0))
     total_own_occ = own_totals[0]
     pct_own_occ = int(round(total_own_occ/float(total_parcels)*100, 0))
+    paragraph = ["{} contains a total of ".format(nhood_name),
+                 str(total_parcels),
+                 " parcels with ",
+                 str(unique_own),
+                 " unique owners. ",
+                 str(sum_top_own),
+                 " parcels ({}%) are owned by 5 different owners and ".format(pct_top_own),
+                 str(total_own_occ),
+                 " ({}%) are owner occupied.".format(pct_own_occ),
+                 ""
+                 ]
+    report.update_text("par_own", paragraph)
+    text_par_own = ("{neighborhood} contains a total of {parcel_count} parcels\n"
+               "with {unique_count} unique owners. {parcel_count_top_owners} parcels "
+               "({pct_top_owners}%)\nare owned by 5 different owners and {owner_occ_count}"
+               " ({pct_owner_occ}%)\nare onwer occupied")
+    paragraph_tag = "par_own"
+    #par_own = 
+
     long_string =  "{0} parcels ({1}%) owned by 5 owners and {2} ({3}%) owner occupied"
     print "Total Parcels: {}".format(total_parcels)
     print "Unique Owners: {}".format(unique_own)
@@ -1142,7 +1195,7 @@ def property_table_exists():
     except:
         return False
 
-def property_conditions():
+def property_conditions(nbhood_name, report, map_document):
     """
     Maps:
         - code_enforcement
@@ -1150,8 +1203,9 @@ def property_conditions():
 
 
     """
-    if not property_table_exists():
-        make_property_table(NEIGHBORHOOD)
+    # if not property_table_exists():
+        # make_property_table(NEIGHBORHOOD)
+    report.update_title(nbhood_name, "property")
     df_props = pd.read_sql("select * from reports.nbhood_props", engine_blight)
     #selects all of the code enforcement violations over time
     q_code = ("select * from "
@@ -1197,7 +1251,8 @@ def property_conditions():
     plt.tight_layout()
     plt.savefig('./Pictures/code_viols_all.jpg', dpi=300)
     plt.close()
-
+    report.update_image_path("code_viols_all")
+    
     #------------------------------------------------------------------------
     #-----------------Heat Map for All Requests over time--------------------
     #------------------------------------------------------------------------
@@ -1219,6 +1274,7 @@ def property_conditions():
     plt.tight_layout()
     plt.savefig('./Pictures/code_req_heatmap.jpg', dpi=300, bbox_inches="tight")
     plt.close()
+    report.update_image_path("code_req_heatmap")
 
     #------------------------------------------------------------------------
     #-----------------Bar Chart for most common Requests---------------------
@@ -1241,6 +1297,7 @@ def property_conditions():
     plt.tight_layout()
     plt.savefig('./Pictures/req_by_type.jpg', dpi=300)
     plt.close()
+    report.update_image_path("req_by_type")
     
     #calculate values for text in middle of page
     total_parcels = engine_blight.execute(("select count(parcelid) "
@@ -1269,6 +1326,21 @@ def property_conditions():
     for t in q_tables:
         result = engine_blight.execute(q_vals.format(**t)).fetchone()[0]
         results[t["table"]] = pct(result/float(total_parcels))
+    report.update_text("txt_code_enf", results["com_incident"])
+    report.update_text("txt_elec", results["mlgw_disconnects"])
+    report.update_text("txt_vacant", results["sca_pardat"])
+    
+    template_code = "code_enforcement"
+    basemap_layers = ["boundaries", "boundary_mask", "streets_labels", 
+                      "steets_carto", "sca_parcels"
+                      ]
+    map_code = QgisTemplate(map_document,
+                      "./maps/{}.qpt".format(template_code))
+    map_code.set_visible_layers("main_map", basemap_layers+["code_enforcement_incidents"],
+                               "boundaries")
+    map_code.save_map("./Pictures/{}".format(template_code), "jpg")
+    report.update_image_path(template_code)
+
 
 def pct(val):
     return str(int(round(val * 100, 0))) + "%"
@@ -1380,6 +1452,8 @@ def intro_page(nbhood_name, report, map_document):
     qmap.save_map("./Pictures/"+template_name)
     report.update_title(nbhood_name, "main")
     report.update_image_path(template_name)
+    for org in ["caeser", "im", "npi"]:
+        report.update_image_path(org+"_logo")
 
 
 def run_neighborhood_report(nbhood_name):
@@ -1407,6 +1481,10 @@ def run_neighborhood_report(nbhood_name):
         os.mkdir(dir_name+"/Pictures")
         shutil.copytree("REPORT_TEMPLATE/maps", dir_name+"/maps")
         shutil.copy("REPORT_TEMPLATE/report_template.odt", os.path.join(dir_name, report_name))
+        logo_path = "REPORT_TEMPLATE/logos"
+        for jpg in os.listdir(logo_path):
+            shutil.copy("/".join([logo_path, jpg]),dir_name+"/Pictures")
+
     os.chdir(dir_name)
     for f in os.listdir("./maps"):
         with open("./maps/"+f, "r") as f_qgs:
@@ -1428,6 +1506,8 @@ def run_neighborhood_report(nbhood_name):
     intro_page(nbhood_name, report, report_map)
     print "Generating content for Page 2.\n"
     ownership_profile(nbhood_name, report, report_map)
+    print "Generating content for Page 3.\n"
+    property_conditions(nbhood_name, report, report_map)
     report.save_report()
     report_map.close()
 
