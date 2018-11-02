@@ -72,8 +72,10 @@ import seaborn as sns
 import shutil
 from sqlalchemy import text
 import string
+import subprocess
 import sys
 sys.path.append('/home/nate/source')
+import time
 from titlecase import titlecase
 import zipfile
 import warnings
@@ -87,7 +89,7 @@ pd.set_option('display.width', 180)
 os.chdir("/home/nate/dropbox-caeser/Data/MIDT/Data_Warehouse/reports")
 #nbhood = 'Klondike Smokey City CDC'
 cur_year = datetime.datetime.today().year
-ACS_SCHEMA = "acs5yr_2016"
+ACS_SCHEMA = "acs5yr_2015" #"acs5yr_2016"
 FILEID = ACS_SCHEMA.split("_")[-1]+"e5"
 #list of layers to be active in all maps for neighborhood report
 BASEMAP_LAYERS = ["boundaries", "boundary_mask", "street_labels", 
@@ -112,7 +114,7 @@ class Report:
         self.nbhood = nbhood_name
         dir_name = self.nbhood.replace(" ", "_")
         self.zip_in = zipfile.ZipFile(dir_name+"_report.odt")
-        self.zip_out = zipfile.ZipFile(dir_name+"_report_new.odt", "w")
+        self.zip_out = zipfile.ZipFile(dir_name+".odt", "w")
         self.xml_content = self.zip_in.read("content.xml")
         self.xml_manifest = self.zip_in.read("META-INF/manifest.xml")
         self.root_content = etree.fromstring(self.xml_content)
@@ -162,6 +164,14 @@ class Report:
                 etree.tostring(self.root_manifest))  
         for pic in os.listdir("./Pictures"):
             self.zip_out.write("./Pictures/"+pic)
+        self.zip_out.close()
+        # time.sleep(40)
+        print "Converting to pdf."
+        # subprocess.check_output(["libreoffice", "--convert-to", "pdf:writer_pdf_Export", 
+            # "--outdir", "../../COMPLETED_REPORTS", self.zip_out.filename])
+        cmd = ("libreoffice --headless --convert-to pdf:writer_pdf_Export "
+                "--outdir ../../COMPLETED_REPORTS {}".format(self.zip_out.filename))
+        subprocess.call(cmd, shell=True)
 
     def insert_image(self, image_name):
         """
@@ -178,24 +188,23 @@ class Report:
                 rows for to be updated
             header_row (list:int): list of integers containing header rows to be skipped
                 while updating row values
-            row_values (list:str): list of values with new data to be inserted into final
-                report
+            row_values (list:list:str): nested list of values with new data to be 
+                inserted into final report
 
         Returns:
             None
         """
         table_xpath = "//table:table[@table:name='{}']/table:table-row".format(table_name)
-        table = self.root_content.xpath(table_xpath, namespaces=self.ns)
-        num_rows = len(table)
+        xml_table = self.root_content.xpath(table_xpath, namespaces=self.ns)
+        num_rows = len(xml_table)
         for row_num in [i for i in range(num_rows) if i not in header_row]:
-            row = table[row_num].xpath(".//text:p", namespaces=self.ns)
+            row = xml_table[row_num].xpath(".//text:p", namespaces=self.ns)
             col_num = 0
-            print [i.text for i in row]
+            new_row = row_values.pop(0)
             for cell in row:
-                val = row_values[row_num-1][col_num]
+                val = new_row[col_num]
                 cell.text = str(val)
                 col_num += 1
-            print [i.text for i in row]
 
     def update_title(self, neighborhood_name, tag_name="main"):
         """
@@ -228,12 +237,20 @@ class Report:
     
     def update_text(self, tag_name, text_values):
         """
+        Update text value in content.xml for the specified tag
 
+        Args:
+            tag_name (str): tag name for the text element to be updated in content.xml
+            text_values (list:str): list containing strings to be inserted into the
+                specified element
+
+        Returns:
+            None
         """
         text_path = ("//draw:frame[@draw:name='{}']/draw:text-box/text:p/text:span")
         values = self.root_content.xpath(text_path.format(tag_name), namespaces=self.ns)
         for i in range(len(values)):
-            values[i].text = text_values[i]
+            values[i].text = text_values[i] if type(text_values) == list else text_values
 
 class QgisMap:
     """
@@ -663,14 +680,23 @@ def get_tract_ids(nbhood):
             intersect neighborhood boundary.
     """
     q = ("select geoid10 from geography.tiger_tract_2010 t, "
-            "geography.bldg_cdc_boundaries b "
+            #"geography.bldg_cdc_boundaries b "
+            #"geography.boundaries b "
+            "geography.clean_memphis b "
          "where st_intersects(t.wkb_geometry, b.wkb_geometry) "
             "and b.name = '{}'")
     tracts = engine_blight.execute(q.format(nbhood)).fetchall()
     return [i[0] for i in tracts]
 
-def neighborhood_profile(nbhood=None):
+def formatted(string, key):
+    string_formats = {"dollars": "${:,}",
+                      "percent": "{:.0f}%",
+                      "numeric": "{:,}"
+                      }
+    return string_formats[key].format(string)
 
+def neighborhood_profile(nbhood, report, map_document):
+    report.update_title(nbhood, "neighborhood")
     tables = {'b02001':'Race', 
               'b19013': 'Median Household Income',
               's1701': 'Poverty Status',
@@ -725,6 +751,7 @@ def neighborhood_profile(nbhood=None):
 
     plt.savefig('./Pictures/pop_change_tracts.jpg', dpi=300)
     plt.close()
+    report.update_image_path("pop_change_tracts")
     #--- Plots to compare neighborhood with County
     # ax = plt.subplot(111)
     # plt.plot(pop_shelby[years].sum(), label='Shelby County')
@@ -741,8 +768,8 @@ def neighborhood_profile(nbhood=None):
    #------------------------------------------------------------------------------------ 
    #------------------- Data for Socioecomic table  -------------------------- 
    #------------------------------------------------------------------------------------ 
-
-
+    #create nested list containing 4 rows in demographic table
+    dem_table_values = [[] for row in range(4)]
     #median income
     q_inc = ("select * from {schema}.b19001 "
              "where geoid in ('{tracts}') and fileid = '{fileid}'")
@@ -752,13 +779,27 @@ def neighborhood_profile(nbhood=None):
     for col in [col for col in inc.columns if col not in skip]:
         inc_list.append(inc[col].sum())
     nbhood_mdn = int(round(calculate_median(inc_list)))
-
+    dem_table_values[0].append(formatted(nbhood_mdn,"dollars"))
     #poverty
     q_pov = ("select sum(b17001002) total, "
              "sum(b17001002)/sum(b17001001)*100 pct_bel_pov "
              "from {schema}.b17001 "
              "where geoid in ('{tracts}') and fileid = '{fileid}';")
     pov = engine_census.execute(q_pov.format(**table_params)).fetchone()
+    dem_table_values[0].append(formatted(pov[1],"percent"))
+    #language
+    q_lang = ("with agg as "
+		"(select sum(b16001001) total, "
+	            "sum(b16001002) eng, sum(b16001003) span "
+         	"from {schema}.b16001 "
+                    "where geoid in ('{tracts}') "
+                    "and fileid = '{fileid}') "
+             "select eng/total*100 eng, span/total*100 span "
+             "from agg")
+    lang_vals = engine_census.execute(q_lang.format(**table_params)).fetchone()
+    lang_pct = [int(round(i)) for i in lang_vals]
+    dem_table_values[0].append("") #add empty value for missing column in row
+    dem_table_values[0].extend([formatted(i,"percent") for i in lang_pct])
 
     #transportation
     q_trans = ("with agg as "
@@ -772,8 +813,8 @@ def neighborhood_profile(nbhood=None):
                     "trans/total*100 pct_trans, walk/total*100 pct_walk, "
                     "other/total*100 pct_other "
                 "from agg")
-    trans = pd.read_sql(q_trans.format(**table_params), engine_census)
-
+    trans = engine_census.execute(q_trans.format(**table_params)).fetchall()[0]
+    dem_table_values[1] = [formatted(round(i), "percent") for i in trans]
     q_move = ("with agg as "
 		"(select sum(b07001001) total, sum(b07001017) same_home,"
 		    "sum(b07001033) same_county, sum(b07001049) same_state,  "
@@ -787,7 +828,8 @@ def neighborhood_profile(nbhood=None):
             "diff_state/total*100 diff_state, "
             "diff_country/total*100 diff_country "
             "from agg")
-    move = pd.read_sql(q_move.format(**table_params), engine_census)
+    move = engine_census.execute(q_move.format(**table_params)).fetchall()[0]
+    dem_table_values[2] = [formatted(round(i), "percent") for i in move]
 
     q_ed = ("with agg as "
 		"(select sum(b15001001) total, "
@@ -830,21 +872,21 @@ def neighborhood_profile(nbhood=None):
             "from agg")
     ed_vals = engine_census.execute(q_ed.format(**table_params)).fetchone()
     ed_pct = [int(round(i)) for i in ed_vals]
+    dem_table_values[3] = [formatted(i, "percent") for i in ed_pct]
+    headers = [0,1,3,4,6,7,9,10]
+    #add empty "rows" to stand in for headers so list is same shape as table
+    # full_dem_table = []
+    # for i in range(12):
+        # if i in headers:
+            # full_dem_table.append([])
+        # else:
+            # full_dem_table.append(dem_table_values.pop(0))
 
-    q_lang = ("with agg as "
-		"(select sum(b16001001) total, "
-	            "sum(b16001002) eng, sum(b16001003) span "
-         	"from {schema}.b16001 "
-                    "where geoid in ('{tracts}') "
-                    "and fileid = '{fileid}') "
-             "select eng/total*100 eng, span/total*100 span "
-             "from agg")
-    lang_vals = engine_census.execute(q_lang.format(**table_params)).fetchone()
-    lang_pct = [int(round(i)) for i in lang_vals]
+    report.update_table("tbl_demographic", headers, dem_table_values)#full_dem_table)
 
-   #------------------------------------------------------------------------------------ 
-   #--------------------------- Population Pyramid ----------------------- ---
-   #------------------------------------------------------------------------------------ 
+    #------------------------------------------------------------------------------------ 
+    #--------------------------- Population Pyramid ----------------------- ---
+    #------------------------------------------------------------------------------------ 
 
     age_labels = []
     for i in range(5, 90, 5):
@@ -885,7 +927,7 @@ def neighborhood_profile(nbhood=None):
     fig.subplots_adjust(wspace=0.22)
     plt.savefig('./Pictures/pop_pyramid.jpg', dpi=300)
     plt.close()
-
+    report.update_image_path("pop_pyramid")
    #------------------------------------------------------------------------------------ 
    #--------------------------- Male vs Female Chart -----------------------------------
    #------------------------------------------------------------------------------------ 
@@ -909,7 +951,21 @@ def neighborhood_profile(nbhood=None):
     plt.tight_layout()
     plt.savefig('./Pictures/mf_ratio.jpg', dpi=300)
     plt.close()
-    
+    report.update_image_path("mf_ratio")
+
+    #update map image
+    template_landuse = "land_use"
+    map_landbank = QgisTemplate(map_document, 
+                           "./maps/{}.qpt".format(template_landuse))
+    basemap_layers = ["boundaries", "boundary_mask", "streets_labels", 
+                      "steets_carto", "sca_parcels"
+                      ]
+    map_landbank.set_visible_layers("main_map", basemap_layers + ["land_use", "tracts"],
+                                    "boundaries")
+    map_landbank.save_map("./Pictures/{}".format(template_landuse), "jpg")
+    report.update_image_path(template_landuse)
+   
+
 def build_age_query(var_index, twos, threes):
     """
     Helper function to build query for age by sex table.
@@ -1023,7 +1079,8 @@ def ownership_profile(nhood_name, report, map_document):
                             "(select parcelid, parid, "
                                 "concat(adrno, ' ', adrstr) par_adr "
             	            "from sca_parcels p, sca_pardat, "
-                            "geography.boundaries b "
+                            #"geography.boundaries b "
+                            "geography.clean_memphis b "
                             "where parid = parcelid "
                             "and st_intersects(st_centroid(p.wkb_geometry), "
                                                 "b.wkb_geometry) "
@@ -1114,7 +1171,8 @@ def ownership_profile(nhood_name, report, map_document):
     
     #update ownership table in report
     df_own.index += 1 
-    report.update_table("tbl_own", [0], df_own.to_records())
+    new_values = [[row for row in rows] for rows in df_own.to_records()]
+    report.update_table("tbl_own", [0], new_values)
 
     own_count = pd.read_sql("select * from reports.own_count", engine_blight)
     
@@ -1141,15 +1199,7 @@ def ownership_profile(nhood_name, report, map_document):
                "({pct_top_owners}%)\nare owned by 5 different owners and {owner_occ_count}"
                " ({pct_owner_occ}%)\nare onwer occupied")
     paragraph_tag = "par_own"
-    #par_own = 
-
-    long_string =  "{0} parcels ({1}%) owned by 5 owners and {2} ({3}%) owner occupied"
-    print "Total Parcels: {}".format(total_parcels)
-    print "Unique Owners: {}".format(unique_own)
-    print long_string.format(sum_top_own, pct_top_own, total_own_occ, pct_own_occ)
-
     report.update_title(nhood_name, "own")
-    #map_landbank.close()
 
 def make_property_table(nbhood, schema="public", table="sca_parcels"):
     """
@@ -1178,7 +1228,8 @@ def make_property_table(nbhood, schema="public", table="sca_parcels"):
                     "select parcelid, lower(concat(adrno, adrstr)) paradrstr,"
                     "initcap(concat(adrno, ' ', adrstr)), p.wkb_geometry  "
                     "from {schema}.{table} p, {pardat}, " 
-                        "geography.boundaries b "
+                        #"geography.boundaries b "
+                        "geography.clean_memphis b "
                     "where st_intersects(st_centroid(p.wkb_geometry), "
                             "b.wkb_geometry) "
                     "and name = '{nbhood}' "
@@ -1326,9 +1377,10 @@ def property_conditions(nbhood_name, report, map_document):
     for t in q_tables:
         result = engine_blight.execute(q_vals.format(**t)).fetchone()[0]
         results[t["table"]] = pct(result/float(total_parcels))
-    report.update_text("txt_code_enf", results["com_incident"])
-    report.update_text("txt_elec", results["mlgw_disconnects"])
-    report.update_text("txt_vacant", results["sca_pardat"])
+    
+    report.update_text("txt_code_enf", [results["com_incident"]])
+    report.update_text("txt_elec", [results["mlgw_disconnects"]])
+    report.update_text("txt_vacant", [results["sca_pardat"]])
     
     template_code = "code_enforcement"
     basemap_layers = ["boundaries", "boundary_mask", "streets_labels", 
@@ -1345,18 +1397,18 @@ def property_conditions(nbhood_name, report, map_document):
 def pct(val):
     return str(int(round(val * 100, 0))) + "%"
 
-def financial_profile():
+def financial_profile(nhood_name, report, map_document):
     """
     TODO:
         - Total number of mortgage originations for past year
     """
+    report.update_title(nhood_name, "financial")
     tax_yr = engine_blight.execute("select taxyr from sca_pardat limit 1").fetchone()[0]
-    if not property_table_exists():
-        make_property_table(NEIGHBORHOOD)
     df_props = pd.read_sql("select * from reports.nbhood_props", engine_blight)
 
     #--------------------------Percent change in appraised value-------------------------
     q_appr = ("select parcelid, apr_cur, apr01 "
+
               "from reports.nbhood_props, "
               "(select asmt.parid, a01.rtotapr apr01, asmt.rtotapr apr_cur "
                 "from sca_asmt asmt, geography.sca_asmt_2001 a01 "
@@ -1366,12 +1418,14 @@ def financial_profile():
     df_appr["apr01_adj"] = utils.inflate(2001, tax_yr, df_appr.apr01)
     pct_chg = lambda y1, y2: (y2-y1)/y1*100
     df_appr["pct_chg"] = pct_chg(df_appr.apr01_adj, df_appr.apr_cur)
-    df_appr.to_sql("appraisal_change", engine_blight, schema="reports", if_exists="replace")
+    df_appr.to_sql("appr_change", engine_blight, schema="reports", if_exists="replace")
     #Total percent change in apprasied value all properties
     tot_chg = round((df_appr.apr_cur.sum()-df_appr.apr01_adj.sum())/
                         df_appr.apr01_adj.sum()*100, 2)
+    report.update_text("txt_appr_chng", formatted(tot_chg, "percent"))
 
     #-----------------------------Average gross rent------------------------------------
+    tracts = get_tract_ids(nhood_name)
     fileid = ACS_SCHEMA.split("_")[-1] 
     q_rent = ("select rent.geoid, b25003003 renter, b25065001 agg_rent "
               "from {0}.b25003 tenure, {0}.b25065 rent "
@@ -1380,10 +1434,10 @@ def financial_profile():
               "and rent.fileid = '{2}e5' "
               "and tenure.fileid = '{2}e5'")
     df_rent = pd.read_sql(q_rent.format(*[ACS_SCHEMA, 
-                                          "','".join([g for g in t]), 
+                                          "','".join([g for g in tracts]), 
                                           fileid]), engine_census)
     avg_rent = round(df_rent.agg_rent.sum()/df_rent.renter.sum(), 2)
-
+    report.update_text("txt_avg_rent", formatted(avg_rent, "dollars"))
     #------------------------Median Residential sale value------------------------------
     #The PostgreSQL median function needs to be created if it doesn't already exist
     #the code can be found at https://wiki.postgresql.org/wiki/Aggregate_Median 
@@ -1402,14 +1456,17 @@ def financial_profile():
     sales_nbhood = (engine_blight.execute(q_sales
                                  .format(dt_val, ", reports.nbhood_props where parcelid = parid"))
                                  .fetchone()[0])
+    report.update_text("txt_mdn_res_sale_nbhd", formatted(int(sales_nbhood), "dollars")) 
     #limit selection to city parcels
     sales_city = (engine_blight.execute(q_sales
                                  .format(dt_val, "where substring(parid, 1,1) = '0'"))
                                  .fetchone()[0])
+    report.update_text("txt_mdn_res_sale_mem", formatted(int(sales_city), "dollars"))
     #median for all parcels in county
     sales_county = (engine_blight.execute(q_sales
                                  .format(dt_val, ""))
                                  .fetchone()[0])
+    report.update_text("txt_mdn_res_sale_county", formatted(int(sales_county), "dollars"))
 
     #-----------------------------------Tax Sale-----------------------------------------
     q_tax = ("select parcelid, sum(sumdue) due, sum(sumrecv) recv, status "
@@ -1422,9 +1479,33 @@ def financial_profile():
     ct_elig = df_tax[df_tax.status == "Eligible"].shape[0]
     ct_total = df_props.shape[0]
     pct_elig = int(round(ct_elig/float(ct_total)*100))
+    report.update_text("txt_tax_sale_elig", formatted(pct_elig, "percent"))
     ct_active = df_tax[df_tax.status == "Active"].shape[0]
     pct_active = int(round(ct_active/float(ct_total)*100))
+    report.update_text("txt_tax_sale_act", formatted(pct_active, "percent"))
     df_tax.to_sql("tax_sale", engine_blight, schema="reports", if_exists="replace")
+
+    #update appraisal change map
+    template_appraisal = "appraisal_change"
+    map_appraisal = QgisTemplate(map_document, 
+                           "./maps/{}.qpt".format(template_appraisal))
+    basemap_layers = ["boundaries", "boundary_mask", "streets_labels", 
+                      "steets_carto", "sca_parcels"
+                      ]
+    map_appraisal.set_visible_layers("main_map", basemap_layers + ["appr_change"],
+                                    "boundaries")
+    map_appraisal.save_map("./Pictures/{}".format(template_appraisal), "jpg")
+    report.update_image_path(template_appraisal)
+    
+    #update tax sale map
+    template_tax = "tax_sale"
+    map_tax = QgisTemplate(map_document, 
+                           "./maps/{}.qpt".format(template_tax))
+    map_tax.set_visible_layers("main_map", basemap_layers + ["tax_sale"],
+                                    "boundaries")
+    map_tax.save_map("./Pictures/{}".format(template_tax), "jpg")
+    report.update_image_path(template_tax)
+ 
 
 def intro_page(nbhood_name, report, map_document):
     """
@@ -1473,15 +1554,15 @@ def run_neighborhood_report(nbhood_name):
     Returns:
         None
     """
-    os.chdir("./neighborhood")
+    os.chdir("./neighborhood/GENERATED_TEMPLATES")
     dir_name = nbhood_name.replace(" ", "_")
     report_name = dir_name + "_report.odt"
     if not os.path.exists(dir_name):
         os.mkdir(dir_name)
         os.mkdir(dir_name+"/Pictures")
-        shutil.copytree("REPORT_TEMPLATE/maps", dir_name+"/maps")
-        shutil.copy("REPORT_TEMPLATE/report_template.odt", os.path.join(dir_name, report_name))
-        logo_path = "REPORT_TEMPLATE/logos"
+        shutil.copytree("../REPORT_TEMPLATE/maps", dir_name+"/maps")
+        shutil.copy("../REPORT_TEMPLATE/report_template.odt", os.path.join(dir_name, report_name))
+        logo_path = "../REPORT_TEMPLATE/logos"
         for jpg in os.listdir(logo_path):
             shutil.copy("/".join([logo_path, jpg]),dir_name+"/Pictures")
 
@@ -1501,13 +1582,17 @@ def run_neighborhood_report(nbhood_name):
     make_property_table(nbhood_name) 
     print "Setting up report template.\n"
     report = Report(nbhood_name)
-    print "Generating content for Page 1.\n"
     report_map = QgisMap("./maps/report_maps.qgs")
+    print "Generating content for Page 1.\n"
     intro_page(nbhood_name, report, report_map)
     print "Generating content for Page 2.\n"
     ownership_profile(nbhood_name, report, report_map)
     print "Generating content for Page 3.\n"
     property_conditions(nbhood_name, report, report_map)
+    print "Generating content for Page 4.\n"
+    neighborhood_profile(nbhood_name, report, report_map)
+    print "Generating content for Page 5.\n"
+    financial_profile(nbhood_name, report, report_map)
     report.save_report()
     report_map.close()
 
