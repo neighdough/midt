@@ -1,5 +1,5 @@
 """
-Generate reports for code violators or neighborhood pre-defined neighborhood.
+
 Takes the desired month for the report as input and produces charts and maps 
 with information about the top code violators for that month. It also updates 
 a running list of the top violators for the current year.
@@ -44,7 +44,8 @@ TODO:
         - create directory using neighborhood name
         - switch to project directory
 """
-
+import sys
+sys.path.append('/home/nate/source')
 from caeser import utils
 import calendar
 from collections import defaultdict
@@ -73,8 +74,6 @@ import shutil
 from sqlalchemy import text
 import string
 import subprocess
-import sys
-sys.path.append('/home/nate/source')
 import time
 from titlecase import titlecase
 import zipfile
