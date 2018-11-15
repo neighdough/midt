@@ -39,7 +39,7 @@ TODO:
         -Add title for Population change chart
         -Check to make sure full history is shown (code violations only 
             displayed to 2012)
-
+G
     *set up project
         - create directory using neighborhood name
         - switch to project directory
@@ -63,7 +63,7 @@ from qgis.core import (QgsProject, QgsComposition, QgsApplication,
                        QgsProviderRegistry, QgsRectangle, QgsPalLayerSettings,
                        QgsComposerAttributeTableV2, QgsComposerMap, QgsComposerLegend,
                        QgsComposerPicture, QgsComposerLabel, QgsComposerFrame,
-                       QgsMapLayerRegistry)
+                       QgsMapLayerRegistry, QgsComposerScaleBar)
 from qgis.gui import QgsMapCanvas, QgsLayerTreeMapCanvasBridge
 from PyQt4.QtCore import QFileInfo, QSize
 from PyQt4.QtXml import QDomDocument
@@ -272,6 +272,7 @@ class QgisMap:
         self.project_name = project_name
         self.project = QgsProject.instance()
         self.project.read(QFileInfo(project_name))
+        self.basemap_layers = []
    
     def root(self):
         return self.project.layerTreeRoot()
@@ -279,6 +280,9 @@ class QgisMap:
     def close(self):
         self.project.clear()
         self.app.exitQgis()
+
+    def set_basemap_layers(self, layers):
+        self.basemap_layers = layers
 
 
 
@@ -322,14 +326,33 @@ class QgisTemplate():
                                     {"setPicturePath": kwargs, 
                                      "refreshPicture": args},
                                 QgsComposerLabel: 
-                                    {"setText": args}
+                                    {"setText": args},
+                                QgsComposerScaleBar:
+                                    {"applyDefaultSize": args,
+                                     "setVisibility": args}
                                 }
         if "basemap" in kwargs:
             self.basemap = kwargs["basemap"]
         if "layers" in kwargs:
             self.layers = kwargs["layers"]
 
+    def reorder_layers(self, thematic_layers, basemap_layers):
+        """
+        Reorder layer names in list so that they draw in the correct order once set
+        in visible layer list. Layers will be inserted above the last two layers in 
+        basemap layers. Thematic layers should be listed in reverse order in which they
+        should be displayed in the map.
 
+        Args:
+            thematic_layers (list:str): list of map layers to be inserted.
+            basemap_layers (list:str): list of current basemap layers.
+        Returns:
+            basemap (list:str)
+        """
+        basemap = [lyr for lyr in basemap_layers]
+        for lyr in thematic_layers:
+            basemap.insert(-2, lyr)
+        return basemap
         
     def get_element_methods(self):
         return self.element_methods
@@ -681,7 +704,7 @@ def get_tract_ids(nbhood):
     q = ("select geoid10 from geography.tiger_tract_2010 t, "
             #"geography.bldg_cdc_boundaries b "
             #"geography.boundaries b "
-            "geography.clean_memphis b "
+            "geography.boundaries b "
          "where st_intersects(t.wkb_geometry, b.wkb_geometry) "
             "and b.name = '{}'")
     tracts = engine_blight.execute(q.format(nbhood)).fetchall()
@@ -956,11 +979,15 @@ def neighborhood_profile(nbhood, report, map_document):
     template_landuse = "land_use"
     map_landbank = QgisTemplate(map_document, 
                            "./maps/{}.qpt".format(template_landuse))
-    basemap_layers = ["boundaries", "boundary_mask", "streets_labels", 
-                      "steets_carto", "sca_parcels"
+#    visible_layers = map_landbank.reorder_layers(["tracts", "land_use"], 
+#                                    map_document.basemap_layers)
+    visible_layers = ["boundaries", "boundary_mask", "streets_labels", 
+                      "steets_carto", "nhd_waterbody", "sca_parcels",
+                      "tracts", "land_use"
                       ]
-    map_landbank.set_visible_layers("main_map", basemap_layers + ["land_use", "tracts"],
-                                    "boundaries")
+
+    #basemap_layers = map_document.basemap_layers
+    map_landbank.set_visible_layers("main_map", visible_layers, "boundaries")
     map_landbank.save_map("./Pictures/{}".format(template_landuse), "jpg")
     report.update_image_path(template_landuse)
    
@@ -1056,18 +1083,24 @@ def ownership_profile(nhood_name, report, map_document):
     template_landbank = "landbank"
     map_landbank = QgisTemplate(map_document, 
                            "./maps/{}.qpt".format(template_landbank))
-    basemap_layers = ["boundaries", "boundary_mask", "streets_labels", 
-                      "steets_carto", "sca_parcels"
-                      ]
-    map_landbank.set_visible_layers("main_map", basemap_layers + ["current_landbank"],
-                                    "boundaries")
+    
+    landbank_layers = ["boundaries", "boundary_mask", "streets_labels", 
+                      "steets_carto", "nhd_waterbody", "sca_parcels",
+                      "current_landbank"]
+#    basemap_layers = map_document.basemap_layers
+#    landbank_layers = map_landbank.reorder_layers(["current_landbank"], basemap_layers)
+    map_landbank.set_visible_layers("main_map", landbank_layers, "boundaries")
+    # map_landbank.add_element("scale_bar")
     map_landbank.save_map("./Pictures/{}".format(template_landbank), "jpg")
     report.update_image_path(template_landbank)
     template_own = "owner_occupancy"
     map_own = QgisTemplate(map_document,
                       "./maps/{}.qpt".format(template_own))
-    map_own.set_visible_layers("main_map", basemap_layers+["own_occ_parcels"],
-                               "boundaries")
+    own_layers = ["boundaries", "boundary_mask", "streets_labels", "streets_carto",
+                  "own_occ_parcels", "nhd_waterbody", "sca_parcels"]
+#    own_layers = map_own.reorder_layers(["own_occ_parcels"], basemap_layers)
+    map_own.set_visible_layers("main_map", own_layers, "boundaries")
+    # map_own.add_element("scale_bar")
     map_own.save_map("./Pictures/{}".format(template_own), "jpg")
     report.update_image_path(template_own)
 
@@ -1079,7 +1112,7 @@ def ownership_profile(nhood_name, report, map_document):
                                 "concat(adrno, ' ', adrstr) par_adr "
             	            "from sca_parcels p, sca_pardat, "
                             #"geography.boundaries b "
-                            "geography.clean_memphis b "
+                            "geography.boundaries b "
                             "where parid = parcelid "
                             "and st_intersects(st_centroid(p.wkb_geometry), "
                                                 "b.wkb_geometry) "
@@ -1228,7 +1261,7 @@ def make_property_table(nbhood, schema="public", table="sca_parcels"):
                     "initcap(concat(adrno, ' ', adrstr)), p.wkb_geometry  "
                     "from {schema}.{table} p, {pardat}, " 
                         #"geography.boundaries b "
-                        "geography.clean_memphis b "
+                        "geography.boundaries b "
                     "where st_intersects(st_centroid(p.wkb_geometry), "
                             "b.wkb_geometry) "
                     "and name = '{nbhood}' "
@@ -1382,13 +1415,15 @@ def property_conditions(nbhood_name, report, map_document):
     report.update_text("txt_vacant", [results["sca_pardat"]])
     
     template_code = "code_enforcement"
-    basemap_layers = ["boundaries", "boundary_mask", "streets_labels", 
-                      "steets_carto", "sca_parcels"
-                      ]
+    #basemap_layers = map_document.basemap_layers
     map_code = QgisTemplate(map_document,
                       "./maps/{}.qpt".format(template_code))
-    map_code.set_visible_layers("main_map", basemap_layers+["code_enforcement_incidents"],
-                               "boundaries")
+    code_layers = ["boundaries", "boundary_mask", "streets_labels", 
+                   "steets_carto", "nhd_waterbody", "sca_parcels",
+                   "code_enforcement_incidents"
+                   ]
+    #code_layers = map_code.reorder_layers(["code_enforcement_incidents"], basemap_layers)
+    map_code.set_visible_layers("main_map", code_layers, "boundaries")
     map_code.save_map("./Pictures/{}".format(template_code), "jpg")
     report.update_image_path(template_code)
 
@@ -1436,7 +1471,7 @@ def financial_profile(nhood_name, report, map_document):
                                           "','".join([g for g in tracts]), 
                                           fileid]), engine_census)
     avg_rent = round(df_rent.agg_rent.sum()/df_rent.renter.sum(), 2)
-    report.update_text("txt_avg_rent", formatted(avg_rent, "dollars"))
+    report.update_text("txt_avg_rent", formatted(int(avg_rent), "dollars"))
     #------------------------Median Residential sale value------------------------------
     #The PostgreSQL median function needs to be created if it doesn't already exist
     #the code can be found at https://wiki.postgresql.org/wiki/Aggregate_Median 
@@ -1488,11 +1523,13 @@ def financial_profile(nhood_name, report, map_document):
     template_appraisal = "appraisal_change"
     map_appraisal = QgisTemplate(map_document, 
                            "./maps/{}.qpt".format(template_appraisal))
-    basemap_layers = ["boundaries", "boundary_mask", "streets_labels", 
-                      "steets_carto", "sca_parcels"
-                      ]
-    map_appraisal.set_visible_layers("main_map", basemap_layers + ["appr_change"],
-                                    "boundaries")
+#    basemap_layers = map_document.basemap_layers
+    #appraisal_layers = map_appraisal.reorder_layers(["appr_change"], basemap_layers)
+    appraisal_layers = ["boundaries", "boundary_mask", "streets_labels", 
+                        "steets_carto", "nhd_waterbody", "sca_parcels",
+                        "appr_change"
+                        ]
+    map_appraisal.set_visible_layers("main_map", appraisal_layers, "boundaries")
     map_appraisal.save_map("./Pictures/{}".format(template_appraisal), "jpg")
     report.update_image_path(template_appraisal)
     
@@ -1500,8 +1537,12 @@ def financial_profile(nhood_name, report, map_document):
     template_tax = "tax_sale"
     map_tax = QgisTemplate(map_document, 
                            "./maps/{}.qpt".format(template_tax))
-    map_tax.set_visible_layers("main_map", basemap_layers + ["tax_sale"],
-                                    "boundaries")
+#    tax_layers = map_tax.reorder_layers(["tax_sale"], basemap_layers)
+    tax_layers = ["boundaries", "boundary_mask", "streets_labels", 
+                        "steets_carto", "nhd_waterbody", "sca_parcels",
+                        "tax_sale"
+                        ]
+    map_tax.set_visible_layers("main_map", tax_layers, "boundaries")
     map_tax.save_map("./Pictures/{}".format(template_tax), "jpg")
     report.update_image_path(template_tax)
  
@@ -1519,16 +1560,17 @@ def intro_page(nbhood_name, report, map_document):
     template_name = "location_overview"
     qmap = QgisTemplate(map_document, 
                    "./maps/{}.qpt".format(template_name))
-    inset_layers = ["boundaries", "tiger_place_2016", "streets_carto_inset"]
-    map_layers = ["streets_labels", "streets_carto", "sca_parcels",
-                  "boundaries", "boundary_mask", "bldg_2014"
-                  ] 
+    inset_layers = ["overview_location", "streets_carto_inset", "tiger_place_2016"]
+    map_layers = ["boundaries", "boundary_mask", "streets_labels", "bldg_2014", 
+                  "streets_carto", "sca_parcels"
+                  ]
     #inset_map
     qmap.set_visible_layers("inset_map", inset_layers, 
             "tiger_place_2016", True)
     #main map 
     qmap.set_visible_layers("main_map", map_layers,
             "boundaries", False)
+    # qmap.add_element("scale_bar", kwargs={"u":1, "setVisibility": False})
     qmap.save_map("./Pictures/"+template_name)
     report.update_title(nbhood_name, "main")
     report.update_image_path(template_name)
@@ -1582,16 +1624,22 @@ def run_neighborhood_report(nbhood_name):
     print "Setting up report template.\n"
     report = Report(nbhood_name)
     report_map = QgisMap("./maps/report_maps.qgs")
+    #"thematic_layer" is a placeholder for the layer to be activated and should be updated
+    #for each map generated except for the location_overview since its layers are hardcoded
+    basemap_layers = ["boundaries", "boundary_mask", "streets_labels", 
+                      "steets_carto", "nhd_waterbody", "sca_parcels"
+                      ]
+#    report_map.set_basemap_layers(basemap_layers)
     print "Generating content for Page 1.\n"
     intro_page(nbhood_name, report, report_map)
-    print "Generating content for Page 2.\n"
-    ownership_profile(nbhood_name, report, report_map)
-    print "Generating content for Page 3.\n"
-    property_conditions(nbhood_name, report, report_map)
-    print "Generating content for Page 4.\n"
-    neighborhood_profile(nbhood_name, report, report_map)
-    print "Generating content for Page 5.\n"
-    financial_profile(nbhood_name, report, report_map)
+    # print "Generating content for Page 2.\n"
+    # ownership_profile(nbhood_name, report, report_map)
+    # print "Generating content for Page 3.\n"
+    # property_conditions(nbhood_name, report, report_map)
+    # print "Generating content for Page 4.\n"
+    # neighborhood_profile(nbhood_name, report, report_map)
+    # print "Generating content for Page 5.\n"
+    # financial_profile(nbhood_name, report, report_map)
     report.save_report()
     report_map.close()
 
