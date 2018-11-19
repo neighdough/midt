@@ -272,7 +272,7 @@ class QgisMap:
         self.project_name = project_name
         self.project = QgsProject.instance()
         self.project.read(QFileInfo(project_name))
-        self.basemap_layers = []
+        # self.basemap_layers = []
    
     def root(self):
         return self.project.layerTreeRoot()
@@ -304,6 +304,7 @@ class QgisTemplate():
         self.registry = QgsMapLayerRegistry.instance()
 
         self.map_layers = [lyr for lyr in self.registry.mapLayers() if self.root.findLayer(lyr)]
+        self.reorder_layers()
         self.scale = self.canvas.scale()
         self.template_file = file(template_name)
         self.template_content = self.template_file.read()
@@ -336,7 +337,7 @@ class QgisTemplate():
         if "layers" in kwargs:
             self.layers = kwargs["layers"]
 
-    def reorder_layers(self, thematic_layers, basemap_layers):
+    def reorder_layers(self):#, thematic_layers, basemap_layers):
         """
         Reorder layer names in list so that they draw in the correct order once set
         in visible layer list. Layers will be inserted above the last two layers in 
@@ -349,10 +350,16 @@ class QgisTemplate():
         Returns:
             basemap (list:str)
         """
-        basemap = [lyr for lyr in basemap_layers]
-        for lyr in thematic_layers:
-            basemap.insert(-2, lyr)
-        return basemap
+        for i in range(len(self.map_layers)):
+            if "sca_parcels" in self.map_layers[i]:
+                idx = i
+        parcels = self.map_layers.pop(idx)
+        self.map_layers.insert(len(self.map_layers), parcels)
+
+        # basemap = [lyr for lyr in basemap_layers]
+        # for lyr in thematic_layers:
+            # basemap.insert(-2, lyr)
+        # return basemap
         
     def get_element_methods(self):
         return self.element_methods
@@ -981,8 +988,9 @@ def neighborhood_profile(nbhood, report, map_document):
                            "./maps/{}.qpt".format(template_landuse))
 #    visible_layers = map_landbank.reorder_layers(["tracts", "land_use"], 
 #                                    map_document.basemap_layers)
-    visible_layers = ["boundaries", "boundary_mask", "streets_labels", 
-                      "steets_carto", "nhd_waterbody", "sca_parcels",
+    visible_layers = ["boundaries", "boundary_mask", 
+                      #"streets_labels", "steets_carto", 
+                      "nhd_waterbody", "sca_parcels",
                       "tracts", "land_use"
                       ]
 
@@ -1084,9 +1092,10 @@ def ownership_profile(nhood_name, report, map_document):
     map_landbank = QgisTemplate(map_document, 
                            "./maps/{}.qpt".format(template_landbank))
     
-    landbank_layers = ["boundaries", "boundary_mask", "streets_labels", 
-                      "steets_carto", "nhd_waterbody", "sca_parcels",
-                      "current_landbank"]
+    landbank_layers = ["boundaries", "boundary_mask", 
+                       #"streets_labels", "steets_carto", 
+                       "nhd_waterbody", "sca_parcels",
+                       "current_landbank"]
 #    basemap_layers = map_document.basemap_layers
 #    landbank_layers = map_landbank.reorder_layers(["current_landbank"], basemap_layers)
     map_landbank.set_visible_layers("main_map", landbank_layers, "boundaries")
@@ -1096,8 +1105,10 @@ def ownership_profile(nhood_name, report, map_document):
     template_own = "owner_occupancy"
     map_own = QgisTemplate(map_document,
                       "./maps/{}.qpt".format(template_own))
-    own_layers = ["boundaries", "boundary_mask", "streets_labels", "streets_carto",
-                  "own_occ_parcels", "nhd_waterbody", "sca_parcels"]
+    own_layers = ["boundaries", "boundary_mask", 
+                  #"streets_labels", "streets_carto",
+                   "nhd_waterbody", "sca_parcels",
+                   "own_occ_parcels"]
 #    own_layers = map_own.reorder_layers(["own_occ_parcels"], basemap_layers)
     map_own.set_visible_layers("main_map", own_layers, "boundaries")
     # map_own.add_element("scale_bar")
@@ -1418,8 +1429,9 @@ def property_conditions(nbhood_name, report, map_document):
     #basemap_layers = map_document.basemap_layers
     map_code = QgisTemplate(map_document,
                       "./maps/{}.qpt".format(template_code))
-    code_layers = ["boundaries", "boundary_mask", "streets_labels", 
-                   "steets_carto", "nhd_waterbody", "sca_parcels",
+    code_layers = ["boundaries", "boundary_mask", 
+                   #"streets_labels", "steets_carto", 
+                   "nhd_waterbody", "sca_parcels",
                    "code_enforcement_incidents"
                    ]
     #code_layers = map_code.reorder_layers(["code_enforcement_incidents"], basemap_layers)
@@ -1525,8 +1537,9 @@ def financial_profile(nhood_name, report, map_document):
                            "./maps/{}.qpt".format(template_appraisal))
 #    basemap_layers = map_document.basemap_layers
     #appraisal_layers = map_appraisal.reorder_layers(["appr_change"], basemap_layers)
-    appraisal_layers = ["boundaries", "boundary_mask", "streets_labels", 
-                        "steets_carto", "nhd_waterbody", "sca_parcels",
+    appraisal_layers = ["boundaries", "boundary_mask", 
+                        #"streets_labels", "steets_carto", 
+                        "nhd_waterbody", "sca_parcels",
                         "appr_change"
                         ]
     map_appraisal.set_visible_layers("main_map", appraisal_layers, "boundaries")
@@ -1538,10 +1551,11 @@ def financial_profile(nhood_name, report, map_document):
     map_tax = QgisTemplate(map_document, 
                            "./maps/{}.qpt".format(template_tax))
 #    tax_layers = map_tax.reorder_layers(["tax_sale"], basemap_layers)
-    tax_layers = ["boundaries", "boundary_mask", "streets_labels", 
-                        "steets_carto", "nhd_waterbody", "sca_parcels",
-                        "tax_sale"
-                        ]
+    tax_layers = ["boundaries", "boundary_mask", 
+                  #"streets_labels", "steets_carto", 
+                  "nhd_waterbody", "sca_parcels",
+                  "tax_sale"
+                  ]
     map_tax.set_visible_layers("main_map", tax_layers, "boundaries")
     map_tax.save_map("./Pictures/{}".format(template_tax), "jpg")
     report.update_image_path(template_tax)
@@ -1632,14 +1646,14 @@ def run_neighborhood_report(nbhood_name):
 #    report_map.set_basemap_layers(basemap_layers)
     print "Generating content for Page 1.\n"
     intro_page(nbhood_name, report, report_map)
-    # print "Generating content for Page 2.\n"
-    # ownership_profile(nbhood_name, report, report_map)
-    # print "Generating content for Page 3.\n"
-    # property_conditions(nbhood_name, report, report_map)
-    # print "Generating content for Page 4.\n"
-    # neighborhood_profile(nbhood_name, report, report_map)
-    # print "Generating content for Page 5.\n"
-    # financial_profile(nbhood_name, report, report_map)
+    print "Generating content for Page 2.\n"
+    ownership_profile(nbhood_name, report, report_map)
+    print "Generating content for Page 3.\n"
+    property_conditions(nbhood_name, report, report_map)
+    print "Generating content for Page 4.\n"
+    neighborhood_profile(nbhood_name, report, report_map)
+    print "Generating content for Page 5.\n"
+    financial_profile(nbhood_name, report, report_map)
     report.save_report()
     report_map.close()
 

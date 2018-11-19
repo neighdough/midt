@@ -7,14 +7,14 @@ from PyQt4.QtXml import QDomDocument
 from PyQt4.QtGui import QImage, QPainter 
 import os 
 
-os.chdir("/home/nate/dropbox-caeser/Data/MIDT/Data_Warehouse/reports/neighborhood/GENERATED_TEMPLATES/Cordova") 
+os.chdir("/home/nate/dropbox-caeser/Data/MIDT/Data_Warehouse/reports/neighborhood/GENERATED_TEMPLATES/South_City") 
 gui_flag = True 
 app = QgsApplication(sys.argv, True) 
 QgsApplication.setPrefixPath("/usr", True) 
 QgsApplication.initQgis() 
 
 project_path = 'report_maps.qgs' 
-template_path = 'location_overview.qpt' 
+template_path = 'owner_occupancy.qpt' 
 
 canvas = QgsMapCanvas() 
 canvas.resize(QSize(1450, 850)) 
@@ -76,7 +76,7 @@ inset_map.setKeepLayerSet(True)
 visible_layers = []
 for map_lyr in map_layers: 
     lyr = root.findLayer(map_lyr) 
-    if lyr.layerName() in basemap + ["bldg_2014"]: 
+    if lyr.layerName() in basemap + ["own_occ_parcels"]: 
         visible_layers.append(map_lyr)
         lyr.setVisible(2) 
     else: 
