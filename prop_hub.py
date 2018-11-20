@@ -631,7 +631,8 @@ def update_com_tables(file_path):
                          'General Services', 'Parks and Neighborhoods', 
                          'Police Services', 'Public Works', 'Shelby County', 
                          '311', 'Housing Community Development', 
-                         'City Attorney', 'Executive', 'Fire Services']
+                         'City Attorney', 'Executive', 'Fire Services',
+                         'Solid Waste Management']
             #regex that checks for any line break not immediately followed
             #by a division name
             rex = "((\n)(?!{}))".format("|".join(divisions))
