@@ -12,8 +12,8 @@ Options:
     -h, --help          : show help document
     violator            : Generate report for top code violators by ownership
     <month>             : Month or months to be used as the range for the 
-                          analysis. Months can either be integer or text values 
-                          (i.e. 1 or Jan)
+                          analysis. Months should be numeric representation 
+                          (i.e. 1 for Jan, 2 for Feb, etc.)
     --year=<year>       : Optional parameter to change the year that the report
                           should be geneated for
     neighborhood        : Generate neighborhood
@@ -39,7 +39,7 @@ TODO:
         -Add title for Population change chart
         -Check to make sure full history is shown (code violations only 
             displayed to 2012)
-G
+
     *set up project
         - create directory using neighborhood name
         - switch to project directory
@@ -304,7 +304,9 @@ class QgisTemplate():
         self.registry = QgsMapLayerRegistry.instance()
 
         self.map_layers = [lyr for lyr in self.registry.mapLayers() if self.root.findLayer(lyr)]
-        self.reorder_layers()
+        #only layers in neighborhood reports need to be reordered
+        if template_name != "map_template.qpt":
+            self.reorder_layers()
         self.scale = self.canvas.scale()
         self.template_file = file(template_name)
         self.template_content = self.template_file.read()
@@ -673,8 +675,9 @@ def owner_violator_map(dframe, group, date_label):
     nhood_map.add_element("date_range", date_label)
 
     map_title = "owner_violator_" + date_label.replace(" ", "_").replace(",", "")
-    nhood_map.save_map(map_title)
-#    nhood_doc.close()
+    nhood_map.save_map(os.path.join(os.environ["HOME"],
+        "caeser-nas1/ftproot/npi/code_violator_report",
+        map_title))
     
 
 def format_date(month, year):
