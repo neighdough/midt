@@ -7,7 +7,7 @@ from PyQt4.QtXml import QDomDocument
 from PyQt4.QtGui import QImage, QPainter 
 import os 
 
-os.chdir("/home/nate/dropbox-caeser/Data/MIDT/Data_Warehouse/reports/neighborhood/GENERATED_TEMPLATES/South_City") 
+os.chdir("/home/nate/dropbox-caeser/Data/MIDT/Data_Warehouse/reports/neighborhood/GENERATED_TEMPLATES/South_City/maps") 
 gui_flag = True 
 app = QgsApplication(sys.argv, True) 
 QgsApplication.setPrefixPath("/usr", True) 
