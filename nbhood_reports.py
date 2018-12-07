@@ -168,6 +168,10 @@ class Report:
         print "Converting to pdf."
         # subprocess.check_output(["libreoffice", "--convert-to", "pdf:writer_pdf_Export", 
             # "--outdir", "../../COMPLETED_REPORTS", self.zip_out.filename])
+        # cmd = ("libreoffice --headless --convert-to pdf:writer_pdf_Export "
+                # "--outdir {0} {1}".format(os.path.join(os.environ["HOME"],
+                                                  # "caeser-nas1/ftproot/npi/neighborhood_reports"),
+                                                  # self.zip_out.filename))
         cmd = ("libreoffice --headless --convert-to pdf:writer_pdf_Export "
                 "--outdir ../../COMPLETED_REPORTS {}".format(self.zip_out.filename))
         subprocess.call(cmd, shell=True)
